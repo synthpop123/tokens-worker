@@ -16,6 +16,8 @@
  *
  * Read side — public, it is just usage data (CORS for lkwplus.com,
  * 5-minute cache):
+ *   GET /api/site — precomposed dashboard view for lkwplus.com/tokens
+ *       (canonical model names, provider-split daily series, devices)
  *   GET /api/stats, /api/timeseries, /api/breakdown, /api/graph,
  *       /api/meta, /api/devices, /api/submissions, /api/health
  *
@@ -26,6 +28,7 @@
 import type { Env } from "./http";
 import { json, corsHeaders } from "./http";
 import { handleSubmit, handleAuthToken, handleDeleteSubmittedData, handleMeStats } from "./submit";
+import { handleSite } from "./site";
 import {
   handleStats,
   handleTimeseries,
@@ -39,7 +42,7 @@ import {
 export type { Env };
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const { pathname } = url;
     const method = request.method;
@@ -58,6 +61,8 @@ export default {
 
     if (method === "GET") {
       switch (pathname) {
+        case "/api/site":
+          return handleSite(request, env, ctx);
         case "/api/stats":
           return handleStats(request, env);
         case "/api/timeseries":

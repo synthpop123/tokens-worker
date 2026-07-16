@@ -49,7 +49,8 @@ Every aggregate row carries the full metric set: `input`, `output`, `cacheRead`,
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/stats` | Overview: `totals` (+ `activeDays`, `firstDate`, `lastDate`), `daily`, `byClient`, `byModel` (with `providers`), `byProvider`, `byDevice` |
+| `GET /api/site` | Precomposed dashboard view for lkwplus.com/tokens, one request for the whole page: per-range (`week`/`month`/`all`) totals + breakdowns with **canonical model names** (per-effort variants like `claude-fable-5-thinking-max` merged into `claude-fable-5` — rules + alias table in `src/models.ts`), full daily series split by provider (for the stacked trend chart and heatmap), and the device list. No filters; served from the edge cache (5 min) so page loads normally skip D1 entirely |
+| `GET /api/stats` | Overview: `totals` (+ `activeDays`, `firstDate`, `lastDate`), `daily`, `byClient`, `byModel` (with `providers`), `byProvider`, `byDevice` — raw model spellings |
 | `GET /api/timeseries?interval=day\|week\|month\|year&group=none\|client\|model\|provider\|device` | `{series: [{period, key?, ...metrics}]}`, optionally split by one dimension — e.g. `interval=day&group=client` powers stacked area charts |
 | `GET /api/breakdown?by=client,model&limit=` | Arbitrary multi-dimension rollup; `by` is any combination of `client`, `model`, `provider`, `device`, `date`, `month`, `year` (mirrors the CLI's `--group-by`) |
 | `GET /api/graph?year=YYYY` | The same `TokenContributionData` shape as a `tokens graph` export (`meta`, `summary`, `years`, `contributions` with per-client rows, `intensity` 0–4, `activeTimeMs`), reconstructed from the matrix — both the heatmap source and a full-fidelity export; filters apply, so per-client graphs work |
@@ -108,6 +109,9 @@ src/merge.ts             Per-day per-client merge engine (regression guard,
                          revision floors, authoritative coverage)
 src/submit.ts            Write path + CLI-facing endpoints
 src/read.ts              Public read API (shared filter parser)
+src/models.ts            Canonical model names for /api/site (suffix rules +
+                         alias table; extend ALIASES for new spellings)
+src/site.ts              /api/site — precomposed, edge-cached dashboard view
 migrations/              D1 schema (0003 is the current clean rebuild)
 wrangler.jsonc           Worker config (custom domain, D1 binding, vars)
 ```

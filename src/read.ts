@@ -22,7 +22,7 @@ import type { Env } from "./http";
 import { json, corsHeaders, DATE_RE } from "./http";
 import { LEGACY_DEVICE_KEY, LEGACY_DEVICE_NAME } from "./payload";
 
-const METRICS_SQL = `
+export const METRICS_SQL = `
   sum(u.input) AS input,
   sum(u.output) AS output,
   sum(u.cache_read) AS cacheRead,
