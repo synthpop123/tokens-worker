@@ -8,16 +8,16 @@
  * provider) x (input, output, cacheRead, cacheWrite, reasoning, messages,
  * cost) — through filterable aggregation endpoints.
  *
- * CLI-facing (bearer auth):
- *   POST   /api/submit                  tokens submit / serve / autosubmit
- *   GET    /api/auth/token              tokens login --token
+ * CLI-facing:
+ *   POST   /api/submit                  tokens submit / serve / autosubmit (auth)
+ *   DELETE /api/settings/submitted-data tokens delete-submitted-data (auth)
+ *   GET    /api/auth/token              tokens login --token (auth)
  *   GET    /api/me/stats                TUI remote tab
- *   DELETE /api/settings/submitted-data tokens delete-submitted-data
- *   GET    /api/submissions             audit log (self-host extra)
  *
- * Public read side (CORS-gated, 5-minute cache):
+ * Read side — public, it is just usage data (CORS for lkwplus.com,
+ * 5-minute cache):
  *   GET /api/stats, /api/timeseries, /api/breakdown, /api/graph,
- *       /api/meta, /api/devices, /api/health
+ *       /api/meta, /api/devices, /api/submissions, /api/health
  *
  * Not implemented: the browser-based GitHub OAuth device flow
  * (POST /api/auth/device[/poll]); use `tokens login --token` instead.

@@ -1,5 +1,6 @@
 /**
- * Public read API over the usage matrix. Every endpoint accepts the same
+ * Public read API over the usage matrix — none of it requires auth (it is
+ * usage data on a single-user backend). Every endpoint accepts the same
  * filter set, so any view the CLI can produce locally (per client / model /
  * provider / device / arbitrary date window) can be reproduced remotely:
  *
@@ -10,14 +11,15 @@
  *   GET /api/stats       overview (totals + per-dimension aggregates + daily)
  *   GET /api/timeseries  interval=day|week|month|year, group=<dimension>
  *   GET /api/breakdown   by=<dim>[,<dim>...] arbitrary multi-dimension rollup
- *   GET /api/graph       contribution graph with CLI-compatible intensity
+ *   GET /api/graph       TokenContributionData export (same shape as
+ *                        `tokens graph`), heatmap-ready with intensity
  *   GET /api/meta        distinct dimension values + data range
  *   GET /api/devices     device inventory with per-device totals
- *   GET /api/submissions audit log (bearer auth)
+ *   GET /api/submissions audit log
  */
 
 import type { Env } from "./http";
-import { json, corsHeaders, isAuthorized, DATE_RE } from "./http";
+import { json, corsHeaders, DATE_RE } from "./http";
 import { LEGACY_DEVICE_KEY, LEGACY_DEVICE_NAME } from "./payload";
 
 const METRICS_SQL = `
@@ -33,42 +35,76 @@ const METRICS_SQL = `
 interface FilterResult {
   where: string;
   params: (string | number)[];
+  /** Same filters restricted to date/device — for tables without the
+   *  client/model/provider dimensions (daily_activity). */
+  dateDeviceWhere: string;
+  dateDeviceParams: (string | number)[];
+  /** True when a client/model/provider filter narrows the usage matrix. */
+  dimensionFiltered: boolean;
   error?: string;
 }
+
+const EMPTY_FILTERS: Omit<FilterResult, "error"> = {
+  where: "",
+  params: [],
+  dateDeviceWhere: "",
+  dateDeviceParams: [],
+  dimensionFiltered: false,
+};
 
 function parseFilters(url: URL): FilterResult {
   const clauses: string[] = [];
   const params: (string | number)[] = [];
+  const ddClauses: string[] = [];
+  const ddParams: (string | number)[] = [];
 
   const from = url.searchParams.get("from");
   const to = url.searchParams.get("to");
   if (from) {
-    if (!DATE_RE.test(from)) return { where: "", params: [], error: "from must be YYYY-MM-DD" };
+    if (!DATE_RE.test(from)) return { ...EMPTY_FILTERS, error: "from must be YYYY-MM-DD" };
     clauses.push("u.date >= ?");
     params.push(from);
+    ddClauses.push("u.date >= ?");
+    ddParams.push(from);
   }
   if (to) {
-    if (!DATE_RE.test(to)) return { where: "", params: [], error: "to must be YYYY-MM-DD" };
+    if (!DATE_RE.test(to)) return { ...EMPTY_FILTERS, error: "to must be YYYY-MM-DD" };
     clauses.push("u.date <= ?");
     params.push(to);
+    ddClauses.push("u.date <= ?");
+    ddParams.push(to);
   }
 
-  const listFilters: Array<[string, string]> = [
-    ["client", "u.client"],
-    ["model", "u.model"],
-    ["provider", "u.provider"],
-    ["device", "u.device_id"],
+  let dimensionFiltered = false;
+  const listFilters: Array<[string, string, boolean]> = [
+    ["client", "u.client", true],
+    ["model", "u.model", true],
+    ["provider", "u.provider", true],
+    ["device", "u.device_id", false],
   ];
-  for (const [param, column] of listFilters) {
+  for (const [param, column, isDimension] of listFilters) {
     const raw = url.searchParams.get(param);
     if (!raw) continue;
     const values = raw.split(",").map((v) => v.trim()).filter((v) => v.length > 0);
     if (values.length === 0) continue;
-    clauses.push(`${column} IN (${values.map(() => "?").join(", ")})`);
+    const clause = `${column} IN (${values.map(() => "?").join(", ")})`;
+    clauses.push(clause);
     params.push(...values);
+    if (isDimension) {
+      dimensionFiltered = true;
+    } else {
+      ddClauses.push(clause);
+      ddParams.push(...values);
+    }
   }
 
-  return { where: clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "", params };
+  return {
+    where: clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "",
+    params,
+    dateDeviceWhere: ddClauses.length > 0 ? `WHERE ${ddClauses.join(" AND ")}` : "",
+    dateDeviceParams: ddParams,
+    dimensionFiltered,
+  };
 }
 
 function cachedJson(request: Request, data: unknown): Response {
@@ -250,6 +286,26 @@ function intensityFor(cost: number, maxCost: number): number {
   return 1;
 }
 
+interface GraphUsageRow {
+  date: string;
+  client: string;
+  model: string;
+  provider: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoning: number;
+  messages: number;
+  cost: number;
+}
+
+/**
+ * GET /api/graph — emits the same TokenContributionData shape as the CLI's
+ * `tokens graph` export (meta / summary / years / contributions with
+ * per-client rows), reconstructed from the stored matrix. This makes the
+ * endpoint both the heatmap data source and a full-fidelity export.
+ */
 export async function handleGraph(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const year = url.searchParams.get("year");
@@ -261,59 +317,141 @@ export async function handleGraph(request: Request, env: Env): Promise<Response>
   const f = parseFilters(url);
   if (f.error) return json({ error: f.error }, 400);
 
-  const rows = await env.DB
-    .prepare(
-      `SELECT u.date, ${METRICS_SQL}
-       FROM daily_usage u ${f.where} GROUP BY u.date ORDER BY u.date`
-    )
-    .bind(...f.params)
-    .all<{
-      date: string;
-      input: number;
-      output: number;
-      cacheRead: number;
-      cacheWrite: number;
-      reasoning: number;
-      tokens: number;
-      messages: number;
-      cost: number;
-    }>();
+  const [usage, activity] = await env.DB.batch([
+    env.DB
+      .prepare(
+        `SELECT u.date, u.client, u.model, u.provider,
+                u.input, u.output, u.cache_read AS cacheRead, u.cache_write AS cacheWrite,
+                u.reasoning, u.messages, u.cost
+         FROM daily_usage u ${f.where}
+         ORDER BY u.date, u.client, u.model, u.provider`
+      )
+      .bind(...f.params),
+    env.DB
+      .prepare(
+        `SELECT u.date, sum(u.active_time_ms) AS activeTimeMs
+         FROM daily_activity u ${f.dateDeviceWhere} GROUP BY u.date`
+      )
+      .bind(...f.dateDeviceParams),
+  ]);
 
-  const days = rows.results;
-  const maxCost = days.reduce((m, d) => Math.max(m, d.cost), 0);
+  // Per-day active time is a whole-device measure; attaching it to a
+  // dimension-filtered view would misattribute it.
+  const activeByDate = new Map<string, number>();
+  if (!f.dimensionFiltered) {
+    for (const r of activity.results as Array<{ date: string; activeTimeMs: number }>) {
+      activeByDate.set(r.date, r.activeTimeMs);
+    }
+  }
+
+  interface DayAgg {
+    tokens: number;
+    cost: number;
+    messages: number;
+    breakdown: { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number };
+    clients: Array<{
+      client: string;
+      modelId: string;
+      providerId?: string;
+      tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number };
+      cost: number;
+      messages: number;
+    }>;
+  }
+  const days = new Map<string, DayAgg>();
+  const clientsSet = new Set<string>();
+  const modelsSet = new Set<string>();
+
+  for (const r of usage.results as unknown as GraphUsageRow[]) {
+    let day = days.get(r.date);
+    if (!day) {
+      day = {
+        tokens: 0,
+        cost: 0,
+        messages: 0,
+        breakdown: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
+        clients: [],
+      };
+      days.set(r.date, day);
+    }
+    const rowTokens = r.input + r.output + r.cacheRead + r.cacheWrite + r.reasoning;
+    day.tokens += rowTokens;
+    day.cost += r.cost;
+    day.messages += r.messages;
+    day.breakdown.input += r.input;
+    day.breakdown.output += r.output;
+    day.breakdown.cacheRead += r.cacheRead;
+    day.breakdown.cacheWrite += r.cacheWrite;
+    day.breakdown.reasoning += r.reasoning;
+    day.clients.push({
+      client: r.client,
+      modelId: r.model,
+      ...(r.provider !== "" ? { providerId: r.provider } : {}),
+      tokens: {
+        input: r.input,
+        output: r.output,
+        cacheRead: r.cacheRead,
+        cacheWrite: r.cacheWrite,
+        reasoning: r.reasoning,
+      },
+      cost: r.cost,
+      messages: r.messages,
+    });
+    clientsSet.add(r.client);
+    modelsSet.add(r.model);
+  }
+
+  const dates = [...days.keys()];
+  const maxCost = [...days.values()].reduce((m, d) => Math.max(m, d.cost), 0);
+  const totalTokens = [...days.values()].reduce((s, d) => s + d.tokens, 0);
+  const totalCost = [...days.values()].reduce((s, d) => s + d.cost, 0);
+  const activeDays = [...days.values()].filter((d) => d.tokens > 0).length;
 
   const years = new Map<string, { totalTokens: number; totalCost: number; start: string; end: string }>();
-  for (const d of days) {
-    const y = d.date.slice(0, 4);
+  for (const [date, d] of days) {
+    const y = date.slice(0, 4);
     const agg = years.get(y);
     if (!agg) {
-      years.set(y, { totalTokens: d.tokens, totalCost: d.cost, start: d.date, end: d.date });
+      years.set(y, { totalTokens: d.tokens, totalCost: d.cost, start: date, end: date });
     } else {
       agg.totalTokens += d.tokens;
       agg.totalCost += d.cost;
-      agg.end = d.date;
+      agg.end = date;
     }
   }
 
   return cachedJson(request, {
-    range: rangeInfo(url),
-    contributions: days.map((d) => ({
-      date: d.date,
-      totals: { tokens: d.tokens, cost: d.cost, messages: d.messages },
-      tokenBreakdown: {
-        input: d.input,
-        output: d.output,
-        cacheRead: d.cacheRead,
-        cacheWrite: d.cacheWrite,
-        reasoning: d.reasoning,
+    meta: {
+      generatedAt: new Date().toISOString(),
+      version: "tokens-worker",
+      dateRange: {
+        start: url.searchParams.get("from") ?? dates[0] ?? null,
+        end: url.searchParams.get("to") ?? dates[dates.length - 1] ?? null,
       },
-      intensity: intensityFor(d.cost, maxCost),
-    })),
+    },
+    summary: {
+      totalTokens,
+      totalCost,
+      totalDays: days.size,
+      activeDays,
+      averagePerDay: activeDays > 0 ? totalCost / activeDays : 0,
+      maxCostInSingleDay: maxCost,
+      clients: [...clientsSet].sort(),
+      models: [...modelsSet].sort(),
+    },
     years: [...years.entries()].map(([y, agg]) => ({
       year: y,
       totalTokens: agg.totalTokens,
       totalCost: agg.totalCost,
       range: { start: agg.start, end: agg.end },
+    })),
+    contributions: [...days.entries()].map(([date, d]) => ({
+      date,
+      totals: { tokens: d.tokens, cost: d.cost, messages: d.messages },
+      intensity: intensityFor(d.cost, maxCost),
+      tokenBreakdown: d.breakdown,
+      clients: d.clients,
+      ...(activeByDate.has(date) ? { activeTimeMs: activeByDate.get(date) } : {}),
     })),
   });
 }
@@ -321,21 +459,17 @@ export async function handleGraph(request: Request, env: Env): Promise<Response>
 // ---------------------------------------------------------------------------
 
 export async function handleMeta(request: Request, env: Env): Promise<Response> {
-  const [clients, models, providers, devices, range] = await env.DB.batch([
+  const [clients, models, providers, devices, range, lastReport] = await env.DB.batch([
     env.DB.prepare(`SELECT DISTINCT client FROM daily_usage ORDER BY client`),
     env.DB.prepare(`SELECT DISTINCT model, provider FROM daily_usage ORDER BY model, provider`),
     env.DB.prepare(`SELECT DISTINCT provider FROM daily_usage WHERE provider != '' ORDER BY provider`),
     env.DB.prepare(`SELECT id, name FROM devices ORDER BY last_seen DESC`),
-    env.DB.prepare(
-      `SELECT min(date) AS start, max(date) AS end, max(updated_at) AS lastUpdatedAt FROM daily_usage`
-    ),
+    env.DB.prepare(`SELECT min(date) AS start, max(date) AS end FROM daily_usage`),
+    env.DB.prepare(`SELECT max(last_seen) AS lastSeen FROM devices`),
   ]);
 
-  const rangeRow = (range.results[0] ?? {}) as {
-    start?: string | null;
-    end?: string | null;
-    lastUpdatedAt?: number | null;
-  };
+  const rangeRow = (range.results[0] ?? {}) as { start?: string | null; end?: string | null };
+  const lastSeen = (lastReport.results[0] as { lastSeen?: number | null } | undefined)?.lastSeen;
 
   return cachedJson(request, {
     clients: (clients.results as Array<{ client: string }>).map((r) => r.client),
@@ -343,7 +477,7 @@ export async function handleMeta(request: Request, env: Env): Promise<Response> 
     providers: (providers.results as Array<{ provider: string }>).map((r) => r.provider),
     devices: devices.results,
     range: { start: rangeRow.start ?? null, end: rangeRow.end ?? null },
-    lastUpdatedAt: rangeRow.lastUpdatedAt != null ? new Date(rangeRow.lastUpdatedAt).toISOString() : null,
+    lastUpdatedAt: lastSeen != null ? new Date(lastSeen).toISOString() : null,
   });
 }
 
@@ -382,9 +516,6 @@ export async function handleDevices(request: Request, env: Env): Promise<Respons
 // ---------------------------------------------------------------------------
 
 export async function handleSubmissions(request: Request, env: Env): Promise<Response> {
-  if (!(await isAuthorized(request, env))) {
-    return json({ error: "Invalid API token" }, 401);
-  }
   const url = new URL(request.url);
   const limitRaw = url.searchParams.get("limit");
   const limit = Math.min(Math.max(limitRaw ? parseInt(limitRaw, 10) || 50 : 50, 1), 500);
@@ -394,12 +525,15 @@ export async function handleSubmissions(request: Request, env: Env): Promise<Res
       `SELECT id, device_id AS deviceId, received_at AS receivedAt,
               date_start AS dateStart, date_end AS dateEnd,
               total_tokens AS totalTokens, total_cost AS totalCost,
-              row_count AS rowCount, cli_version AS cliVersion,
-              generated_at AS generatedAt, mode, warning_count AS warningCount
+              row_count AS rowCount, changed_days AS changedDays,
+              cli_version AS cliVersion, generated_at AS generatedAt,
+              mode, warning_count AS warningCount
        FROM submissions ORDER BY received_at DESC LIMIT ?`
     )
     .bind(limit)
     .all();
 
-  return json({ submissions: rows.results });
+  return json({ submissions: rows.results }, 200, {
+    ...corsHeaders(request.headers.get("Origin")),
+  });
 }

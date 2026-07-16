@@ -3,11 +3,13 @@
  * (packages/frontend/src/lib/validation/submission.ts in missuo/tokens).
  *
  * Deviations from the official zod schema, chosen for a single-user
- * self-hosted backend:
- *   - Unknown client ids are accepted with a warning instead of rejected,
- *     so a newer CLI keeps working without a Worker redeploy.
+ * self-hosted backend running current (v3+) CLIs only:
+ *   - Unknown client ids are accepted instead of rejected, so a newer CLI
+ *     keeps working without a Worker redeploy.
  *   - Provenance schemaVersion caps are not enforced; revision floors
  *     (see merge.ts) still guarantee comparability.
+ *   - Pre-v2 payload shapes are not supported: no "sources"/"source" key
+ *     renames and no per-day timestampMs (the current CLI sends neither).
  */
 
 import { DATE_RE } from "./http";
@@ -38,7 +40,6 @@ export interface ClientContribution {
 
 export interface DailyContribution {
   date: string;
-  timestampMs?: number;
   activeTimeMs?: number;
   totals: { tokens: number; cost: number; messages: number };
   intensity?: number;
@@ -123,9 +124,8 @@ function aliasClient(id: unknown): unknown {
 }
 
 /**
- * Official normalizeLegacySources + normalizeSubmissionData:
- * "sources"/"source" key renames, kilocode→kilo alias, empty modelId→"unknown".
- * Mutates in place.
+ * kilocode→kilo alias and empty modelId→"unknown", as in the official
+ * normalization. Mutates in place.
  */
 export function normalizePayload(raw: unknown): void {
   if (!raw || typeof raw !== "object") return;
@@ -133,10 +133,6 @@ export function normalizePayload(raw: unknown): void {
 
   if (d.summary && typeof d.summary === "object") {
     const summary = d.summary as Record<string, unknown>;
-    if ("sources" in summary && !("clients" in summary)) {
-      summary.clients = summary.sources;
-      delete summary.sources;
-    }
     if (Array.isArray(summary.clients)) summary.clients = summary.clients.map(aliasClient);
   }
 
@@ -144,17 +140,6 @@ export function normalizePayload(raw: unknown): void {
     for (const c of d.contributions) {
       if (!c || typeof c !== "object") continue;
       const day = c as Record<string, unknown>;
-      if ("sources" in day && !("clients" in day)) {
-        const items = Array.isArray(day.sources) ? day.sources : [];
-        day.clients = (items as Record<string, unknown>[]).map((s) => {
-          if (s && typeof s === "object" && "source" in s && !("client" in s)) {
-            const { source, ...rest } = s;
-            return { client: source, ...rest };
-          }
-          return s;
-        });
-        delete day.sources;
-      }
       if (!Array.isArray(day.clients)) continue;
       for (const entry of day.clients) {
         if (!entry || typeof entry !== "object") continue;

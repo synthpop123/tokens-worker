@@ -25,7 +25,6 @@ import {
   deriveRevisionFloors,
   extractCoverages,
   mergeDay,
-  mergeTimestampMs,
   modelKey,
 } from "./merge";
 
@@ -44,10 +43,9 @@ interface StoredUsageRow {
   parser_revision: number;
 }
 
-interface StoredMetaRow {
+interface StoredActivityRow {
   date: string;
-  timestamp_ms: number | null;
-  active_time_ms: number | null;
+  active_time_ms: number;
 }
 
 function buildStoredState(rows: StoredUsageRow[]): DeviceState {
@@ -81,8 +79,8 @@ const INSERT_USAGE_SQL = `
 INSERT INTO daily_usage
   (device_id, date, client, model, provider,
    input, output, cache_read, cache_write, reasoning, messages, cost,
-   parser_revision, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+   parser_revision)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
 export async function handleSubmit(request: Request, env: Env): Promise<Response> {
   if (!(await isAuthorized(request, env))) {
@@ -112,7 +110,7 @@ export async function handleSubmit(request: Request, env: Env): Promise<Response
     (deviceId === LEGACY_DEVICE_KEY ? LEGACY_DEVICE_NAME : null);
 
   // ---- Read stored state for this device --------------------------------
-  const [usageRes, metaRes] = await env.DB.batch([
+  const [usageRes, activityRes] = await env.DB.batch([
     env.DB
       .prepare(
         `SELECT date, client, model, provider, input, output, cache_read,
@@ -121,13 +119,15 @@ export async function handleSubmit(request: Request, env: Env): Promise<Response
       )
       .bind(deviceId),
     env.DB
-      .prepare(`SELECT date, timestamp_ms, active_time_ms FROM daily_meta WHERE device_id = ?`)
+      .prepare(`SELECT date, active_time_ms FROM daily_activity WHERE device_id = ?`)
       .bind(deviceId),
   ]);
   const storedRows = usageRes.results as unknown as StoredUsageRow[];
   const stored = buildStoredState(storedRows);
-  const storedMeta = new Map<string, StoredMetaRow>();
-  for (const m of metaRes.results as unknown as StoredMetaRow[]) storedMeta.set(m.date, m);
+  const storedActivity = new Map<string, number>();
+  for (const m of activityRes.results as unknown as StoredActivityRow[]) {
+    storedActivity.set(m.date, m.active_time_ms);
+  }
 
   const mode = storedRows.length === 0 ? "create" : "merge";
   const floors = deriveRevisionFloors(stored);
@@ -186,60 +186,59 @@ export async function handleSubmit(request: Request, env: Env): Promise<Response
   }
 
   // ---- Plan writes --------------------------------------------------------
+  // Statements are grouped so one day's DELETE+INSERTs never split across
+  // batches: a fresh full-history upload can exceed what a single D1 batch
+  // reliably handles, and if a later batch fails the already-written days
+  // stay internally consistent — the next idempotent resubmit heals the rest.
   const now = Date.now();
-  const statements: D1PreparedStatement[] = [];
+  const groups: D1PreparedStatement[][] = [];
   let insertedRows = 0;
 
   for (const [date, day] of changedDays) {
-    statements.push(
-      env.DB.prepare(`DELETE FROM daily_usage WHERE device_id = ? AND date = ?`).bind(deviceId, date)
-    );
+    const group: D1PreparedStatement[] = [
+      env.DB.prepare(`DELETE FROM daily_usage WHERE device_id = ? AND date = ?`).bind(deviceId, date),
+    ];
     for (const [client, data] of day) {
       for (const [key, m] of data.models) {
         const sep = key.indexOf("\u0000");
         const model = key.slice(0, sep);
         const provider = key.slice(sep + 1);
-        statements.push(
+        group.push(
           env.DB.prepare(INSERT_USAGE_SQL).bind(
             deviceId, date, client, model, provider,
             m.input, m.output, m.cacheRead, m.cacheWrite, m.reasoning,
-            m.messages, m.cost, data.revision, now
+            m.messages, m.cost, data.revision
           )
         );
         insertedRows++;
       }
     }
+    groups.push(group);
   }
 
-  // Per-day metadata (timestampMs earliest-wins, activeTimeMs latest-wins).
+  // Per-day active time from the submission envelope.
   for (const day of contributions) {
-    const existing = storedMeta.get(day.date);
-    const timestampMs = mergeTimestampMs(existing?.timestamp_ms, day.timestampMs ?? null);
-    const activeTimeMs = day.activeTimeMs ?? existing?.active_time_ms ?? null;
-    if (timestampMs === null && activeTimeMs === null) continue;
-    if (existing && existing.timestamp_ms === timestampMs && existing.active_time_ms === activeTimeMs) {
-      continue;
-    }
-    statements.push(
+    const activeTimeMs = day.activeTimeMs;
+    if (activeTimeMs == null || storedActivity.get(day.date) === activeTimeMs) continue;
+    groups.push([
       env.DB
         .prepare(
-          `INSERT INTO daily_meta (device_id, date, timestamp_ms, active_time_ms, updated_at)
-           VALUES (?, ?, ?, ?, ?)
+          `INSERT INTO daily_activity (device_id, date, active_time_ms)
+           VALUES (?, ?, ?)
            ON CONFLICT (device_id, date) DO UPDATE SET
-             timestamp_ms = excluded.timestamp_ms,
-             active_time_ms = excluded.active_time_ms,
-             updated_at = excluded.updated_at`
+             active_time_ms = excluded.active_time_ms`
         )
-        .bind(deviceId, day.date, timestampMs, activeTimeMs, now)
-    );
+        .bind(deviceId, day.date, asNonNegativeInt(activeTimeMs)),
+    ]);
   }
 
   // Device row with envelope metadata.
+  const finalGroup: D1PreparedStatement[] = [];
   const tm = payload.timeMetrics;
   const mcpServers = Array.isArray(payload.mcpServers)
     ? payload.mcpServers.filter((s): s is string => typeof s === "string" && s.length > 0)
     : null;
-  statements.push(
+  finalGroup.push(
     env.DB
       .prepare(
         `INSERT INTO devices
@@ -272,13 +271,14 @@ export async function handleSubmit(request: Request, env: Env): Promise<Response
   // Audit row.
   const submissionId = crypto.randomUUID();
   const dates = contributions.map((d) => d.date).sort();
-  statements.push(
+  finalGroup.push(
     env.DB
       .prepare(
         `INSERT INTO submissions
            (id, device_id, received_at, date_start, date_end, total_tokens,
-            total_cost, row_count, cli_version, generated_at, mode, warning_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            total_cost, row_count, changed_days, cli_version, generated_at,
+            mode, warning_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         submissionId,
@@ -289,6 +289,7 @@ export async function handleSubmit(request: Request, env: Env): Promise<Response
         asNonNegativeInt(payload.summary?.totalTokens),
         asNonNegativeNumber(payload.summary?.totalCost),
         insertedRows,
+        changedDays.size,
         payload.meta?.version ?? null,
         payload.meta?.generatedAt ?? null,
         mode,
@@ -296,7 +297,19 @@ export async function handleSubmit(request: Request, env: Env): Promise<Response
       )
   );
 
-  await env.DB.batch(statements);
+  groups.push(finalGroup);
+
+  // Chunk day-groups into batches, never splitting a group.
+  const MAX_BATCH_STATEMENTS = 100;
+  let batch: D1PreparedStatement[] = [];
+  for (const group of groups) {
+    if (batch.length > 0 && batch.length + group.length > MAX_BATCH_STATEMENTS) {
+      await env.DB.batch(batch);
+      batch = [];
+    }
+    batch.push(...group);
+  }
+  if (batch.length > 0) await env.DB.batch(batch);
 
   // ---- Account-wide metrics for the response (official recalculates) -----
   const metrics = await env.DB
@@ -358,7 +371,7 @@ export async function handleDeleteSubmittedData(request: Request, env: Env): Pro
   }
   await env.DB.batch([
     env.DB.prepare(`DELETE FROM daily_usage`),
-    env.DB.prepare(`DELETE FROM daily_meta`),
+    env.DB.prepare(`DELETE FROM daily_activity`),
     env.DB.prepare(`DELETE FROM devices`),
     env.DB.prepare(`DELETE FROM submissions`),
   ]);
@@ -367,13 +380,10 @@ export async function handleDeleteSubmittedData(request: Request, env: Env): Pro
 
 /**
  * GET /api/me/stats — stable wire contract consumed by the CLI TUI remote
- * tab (schemaVersion 1).
+ * tab (schemaVersion 1). The CLI always sends a bearer token, but this is
+ * read-only usage data, so no auth is required (single-user backend).
  */
 export async function handleMeStats(request: Request, env: Env): Promise<Response> {
-  if (!(await isAuthorized(request, env))) {
-    return json({ error: "Invalid API token" }, 401);
-  }
-
   const [totals, days, devices] = await env.DB.batch([
     env.DB.prepare(
       `SELECT coalesce(sum(input + output + cache_read + cache_write + reasoning), 0) AS tokens,

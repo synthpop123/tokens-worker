@@ -205,6 +205,15 @@ export function mergeDay(
   return { merged, warnings };
 }
 
+/**
+ * The CLI recomputes costs from scratch on every scan; float summation order
+ * makes consecutive scans differ by ~1e-14. Treat sub-1e-9 relative cost
+ * drift as equal so periodic resubmits don't rewrite unchanged days.
+ */
+function costEqual(a: number, b: number): boolean {
+  return Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));
+}
+
 export function daysEqual(a: DayState | undefined, b: DayState): boolean {
   if (!a || a.size !== b.size) return false;
   for (const [client, bData] of b) {
@@ -221,22 +230,13 @@ export function daysEqual(a: DayState | undefined, b: DayState): boolean {
         am.cacheWrite !== bm.cacheWrite ||
         am.reasoning !== bm.reasoning ||
         am.messages !== bm.messages ||
-        am.cost !== bm.cost
+        !costEqual(am.cost, bm.cost)
       ) {
         return false;
       }
     }
   }
   return true;
-}
-
-/** Earliest-wins timestamp merge (official mergeTimestampMs). */
-export function mergeTimestampMs(
-  existing: number | null | undefined,
-  incoming: number | null | undefined
-): number | null {
-  if (incoming != null && existing != null) return Math.min(existing, incoming);
-  return incoming ?? existing ?? null;
 }
 
 export function collectSubmittedClients(
