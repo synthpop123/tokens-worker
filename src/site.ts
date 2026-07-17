@@ -134,14 +134,16 @@ export async function handleSite(request: Request, env: Env, ctx: ExecutionConte
     for (const [key, value] of Object.entries(corsHeaders(origin))) {
       out.headers.set(key, value);
     }
+    // cache.match returns the entry with Cache-Control rewritten to the
+    // zone's Browser Cache TTL (a day), which would let browsers hold
+    // stale payloads long past the intended 5 minutes — restate ours.
+    out.headers.set("Cache-Control", `public, max-age=${CACHE_SECONDS}`);
     return out;
   };
 
   // CORS headers are attached per-request after lookup, so the cached
-  // entry itself stays origin-neutral. The version tag busts the edge
-  // cache whenever the payload shape changes — bump it alongside any
-  // schema change so a fresh deploy serves fresh JSON immediately.
-  const cacheKey = new Request(new URL("/api/site?v=2", request.url).toString());
+  // entry itself stays origin-neutral.
+  const cacheKey = new Request(new URL("/api/site", request.url).toString());
   const cache = caches.default;
   const hit = await cache.match(cacheKey);
   if (hit) return withCors(hit);
