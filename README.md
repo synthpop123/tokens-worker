@@ -40,7 +40,7 @@ Writes require `Authorization: Bearer $TOKENS_API_TOKEN`; reads are public.
 
 Not implemented: the browser GitHub-OAuth device flow (`POST /api/auth/device[/poll]`); log in with `tokens login --token` instead.
 
-### Public read endpoints (no auth; CORS: lkwplus.com + localhost; 5-min cache)
+### Public read endpoints (no auth; CORS allowlist in `src/http.ts` + localhost; 5-min cache)
 
 Internal device ids are never exposed — public rows identify devices by display name, and the `device=` filter takes names. Model rows on the aggregate endpoints are merged under **canonical names** (per-effort variants like `claude-fable-5-thinking-max` merged into `claude-fable-5` — rules + alias table in `src/models.ts`); `/api/graph` keeps raw spellings as the full-fidelity export. "Active days" count any activity, messages included (early-2025 Cursor logs carry message counts without token usage).
 
@@ -79,6 +79,8 @@ curl "https://tokens.lkwplus.com/api/graph?year=2026"
 
 ## Setup & deploy
 
+One-time provisioning:
+
 ```sh
 npm install
 npx wrangler d1 create tokens-usage        # put the database_id into wrangler.jsonc
@@ -86,10 +88,11 @@ npx wrangler d1 migrations apply tokens-usage --remote
 npx wrangler kv namespace create SITE_CACHE  # put the id into wrangler.jsonc
 npx wrangler r2 bucket create tokens-archive
 npx wrangler secret put TOKENS_API_TOKEN   # same token as in ~/.config/tokens/credentials.json
-npm run deploy
 ```
 
-The custom domain route (`tokens.lkwplus.com`) is declared in `wrangler.jsonc` and provisioned on deploy; `workers_dev` is disabled. `TOKENS_USERNAME` (a plain var in `wrangler.jsonc`) is the username echoed by `/api/auth/token` and submit responses.
+**Deploys are Git-driven.** The Worker is connected to this GitHub repo via [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/): every push to `main` builds and deploys to production automatically (build command: none; deploy command: `npx wrangler deploy`). Pushes to other branches upload a preview version without touching production. Don't run `npm run deploy` manually except as an emergency escape hatch — it puts code live that Git doesn't know about, and the next push overwrites it.
+
+The custom domain route (`tokens.lkwplus.com`) is declared in `wrangler.jsonc` and provisioned on deploy; `workers_dev` is disabled. `TOKENS_USERNAME` (a plain var in `wrangler.jsonc`) is the username echoed by `/api/auth/token` and submit responses. The Worker name in the Cloudflare dashboard must keep matching `name` in `wrangler.jsonc` (`tokens-usage`) or builds fail.
 
 ## Local development
 

@@ -8,7 +8,12 @@ export interface Env {
   TOKENS_USERNAME?: string;
 }
 
-const ALLOWED_ORIGINS = ["https://lkwplus.com"];
+const ALLOWED_ORIGINS = [
+  "https://lkwplus.com",
+  "https://likangwei.vercel.app",
+  "https://lkw123.vercel.app",
+  "https://lkw.vercel.app",
+];
 
 export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
