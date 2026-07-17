@@ -18,6 +18,21 @@
       "migrations_dir": "./migrations"
     }
   ],
+  "kv_namespaces": [
+    {
+      "binding": "SITE_CACHE",
+      "id": "13d618cc3c6642318451a8f1502630ad"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ARCHIVE",
+      "bucket_name": "tokens-archive"
+    }
+  ],
+  // No cron triggers (the account's free-plan quota of 5 is taken): the
+  // KV site payload and the daily R2 backup refresh on every accepted
+  // submission instead — the only event that changes the data.
   "observability": {
     "enabled": true
   }

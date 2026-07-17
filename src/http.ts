@@ -1,5 +1,9 @@
 export interface Env {
   DB: D1Database;
+  /** Precomposed /api/site payload, refreshed by the 5-minute cron. */
+  SITE_CACHE: KVNamespace;
+  /** Raw submission payloads + daily D1 exports (see backup.ts). */
+  ARCHIVE: R2Bucket;
   TOKENS_API_TOKEN: string;
   TOKENS_USERNAME?: string;
 }
@@ -8,6 +12,25 @@ const ALLOWED_ORIGINS = ["https://lkwplus.com"];
 
 export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** All dates in the system are calendar days in this zone. */
+export const TIME_ZONE = "Asia/Shanghai";
+
+const isoDayFormat = new Intl.DateTimeFormat("en-CA", {
+  timeZone: TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+/** Today as YYYY-MM-DD in TIME_ZONE. */
+export function isoToday(): string {
+  return isoDayFormat.format(new Date());
+}
+
+/**
+ * Browsers only ever GET the public read API; the write endpoints are
+ * CLI-only and exempt from CORS, so the preflight surface stays minimal.
+ */
 export function corsHeaders(origin: string | null): Record<string, string> {
   const allowed =
     origin !== null &&
@@ -15,8 +38,8 @@ export function corsHeaders(origin: string | null): Record<string, string> {
   if (!allowed) return {};
   return {
     "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
     Vary: "Origin",
   };
 }
@@ -32,7 +55,11 @@ export function json(
   });
 }
 
-/** Constant-time bearer token check (compares SHA-256 digests). */
+/**
+ * Constant-time bearer token check: both sides are hashed to fixed-length
+ * digests (so length never leaks) and compared with the runtime's
+ * timing-safe primitive.
+ */
 export async function isAuthorized(request: Request, env: Env): Promise<boolean> {
   const header = request.headers.get("Authorization") ?? "";
   const match = header.match(/^Bearer\s+(.+)$/);
@@ -42,9 +69,9 @@ export async function isAuthorized(request: Request, env: Env): Promise<boolean>
     crypto.subtle.digest("SHA-256", enc.encode(match[1])),
     crypto.subtle.digest("SHA-256", enc.encode(env.TOKENS_API_TOKEN)),
   ]);
-  const av = new Uint8Array(a);
-  const bv = new Uint8Array(b);
-  let diff = 0;
-  for (let i = 0; i < av.length; i++) diff |= av[i] ^ bv[i];
-  return diff === 0;
+  // Cloudflare-specific extension, absent from lib.dom's SubtleCrypto type.
+  const subtle = crypto.subtle as SubtleCrypto & {
+    timingSafeEqual(a: ArrayBuffer, b: ArrayBuffer): boolean;
+  };
+  return subtle.timingSafeEqual(a, b);
 }

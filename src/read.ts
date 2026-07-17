@@ -1,11 +1,18 @@
 /**
  * Public read API over the usage matrix — none of it requires auth (it is
- * usage data on a single-user backend). Every endpoint accepts the same
- * filter set, so any view the CLI can produce locally (per client / model /
- * provider / device / arbitrary date window) can be reproduced remotely:
+ * usage data on a single-user backend), but internal device ids stay
+ * private: every public row identifies devices by display name only.
+ * Every endpoint accepts the same filter set, so any view the CLI can
+ * produce locally (per client / model / provider / device / arbitrary
+ * date window) can be reproduced remotely:
  *
  *   from, to        YYYY-MM-DD inclusive bounds
- *   client, model, provider, device   comma-separated exact matches
+ *   client, model, provider   comma-separated exact matches (raw ids)
+ *   device          comma-separated device names
+ *
+ * Model rows on the aggregate endpoints (stats, timeseries, breakdown)
+ * are merged under canonical names, same as /api/site; /api/graph keeps
+ * raw spellings because it doubles as the full-fidelity export.
  *
  * Endpoints:
  *   GET /api/stats       overview (totals + per-dimension aggregates + daily)
@@ -21,6 +28,7 @@
 import type { Env } from "./http";
 import { json, corsHeaders, DATE_RE } from "./http";
 import { LEGACY_DEVICE_KEY, LEGACY_DEVICE_NAME } from "./payload";
+import { canonicalModel, mergeModelRows, type ModelMetrics } from "./models";
 
 export const METRICS_SQL = `
   sum(u.input) AS input,
@@ -31,6 +39,19 @@ export const METRICS_SQL = `
   sum(u.input + u.output + u.cache_read + u.cache_write + u.reasoning) AS tokens,
   sum(u.messages) AS messages,
   sum(u.cost) AS cost`;
+
+/**
+ * A day is active when it saw any activity. Early-2025 Cursor logs carry
+ * message counts without token usage; those days count too (the CLI's own
+ * summary.activeDays agrees).
+ */
+const ACTIVE_DAYS_SQL = `count(DISTINCT CASE
+  WHEN (u.input + u.output + u.cache_read + u.cache_write + u.reasoning) > 0
+    OR u.messages > 0 THEN u.date END) AS activeDays`;
+
+/** Resolves public device names to internal ids inside filters. */
+const DEVICE_NAME_SUBQUERY = (placeholders: string) =>
+  `u.device_id IN (SELECT id FROM devices WHERE name IN (${placeholders}))`;
 
 interface FilterResult {
   where: string;
@@ -76,18 +97,21 @@ function parseFilters(url: URL): FilterResult {
   }
 
   let dimensionFiltered = false;
-  const listFilters: Array<[string, string, boolean]> = [
+  const listFilters: Array<[string, string | null, boolean]> = [
     ["client", "u.client", true],
     ["model", "u.model", true],
     ["provider", "u.provider", true],
-    ["device", "u.device_id", false],
+    ["device", null, false],
   ];
   for (const [param, column, isDimension] of listFilters) {
     const raw = url.searchParams.get(param);
     if (!raw) continue;
     const values = raw.split(",").map((v) => v.trim()).filter((v) => v.length > 0);
     if (values.length === 0) continue;
-    const clause = `${column} IN (${values.map(() => "?").join(", ")})`;
+    const placeholders = values.map(() => "?").join(", ");
+    const clause = column
+      ? `${column} IN (${placeholders})`
+      : DEVICE_NAME_SUBQUERY(placeholders);
     clauses.push(clause);
     params.push(...values);
     if (isDimension) {
@@ -118,6 +142,8 @@ function rangeInfo(url: URL): { from: string | null; to: string | null } {
   return { from: url.searchParams.get("from"), to: url.searchParams.get("to") };
 }
 
+const byTokensDesc = (a: ModelMetrics, b: ModelMetrics) => b.tokens - a.tokens;
+
 // ---------------------------------------------------------------------------
 
 export async function handleStats(request: Request, env: Env): Promise<Response> {
@@ -128,8 +154,7 @@ export async function handleStats(request: Request, env: Env): Promise<Response>
   const q = (sql: string) => env.DB.prepare(sql).bind(...f.params);
 
   const [totals, daily, byClient, byModel, byProvider, byDevice] = await env.DB.batch([
-    q(`SELECT ${METRICS_SQL},
-         count(DISTINCT CASE WHEN (u.input + u.output + u.cache_read + u.cache_write + u.reasoning) > 0 THEN u.date END) AS activeDays,
+    q(`SELECT ${METRICS_SQL}, ${ACTIVE_DAYS_SQL},
          min(u.date) AS firstDate,
          max(u.date) AS lastDate
        FROM daily_usage u ${f.where}`),
@@ -138,10 +163,11 @@ export async function handleStats(request: Request, env: Env): Promise<Response>
     q(`SELECT u.client, ${METRICS_SQL}
        FROM daily_usage u ${f.where} GROUP BY u.client ORDER BY tokens DESC`),
     q(`SELECT u.model, group_concat(DISTINCT u.provider) AS providers, ${METRICS_SQL}
-       FROM daily_usage u ${f.where} GROUP BY u.model ORDER BY tokens DESC`),
+       FROM daily_usage u ${f.where} GROUP BY u.model`),
     q(`SELECT u.provider, ${METRICS_SQL}
        FROM daily_usage u ${f.where} GROUP BY u.provider ORDER BY tokens DESC`),
-    q(`SELECT u.device_id AS deviceId, d.name, d.last_seen AS lastSeen,
+    q(`SELECT coalesce(nullif(trim(d.name), ''), 'Unnamed device') AS device,
+         d.last_seen AS lastSeen,
          count(DISTINCT u.date) AS activeDays, ${METRICS_SQL}
        FROM daily_usage u LEFT JOIN devices d ON d.id = u.device_id
        ${f.where} GROUP BY u.device_id ORDER BY tokens DESC`),
@@ -165,7 +191,9 @@ export async function handleStats(request: Request, env: Env): Promise<Response>
     },
     daily: daily.results,
     byClient: byClient.results,
-    byModel: byModel.results,
+    byModel: mergeModelRows(
+      byModel.results as unknown as (ModelMetrics & { model: string })[]
+    ).sort(byTokensDesc),
     byProvider: byProvider.results,
     byDevice: byDevice.results,
   });
@@ -184,7 +212,7 @@ const GROUP_DIMENSIONS: Record<string, string> = {
   client: "u.client",
   model: "u.model",
   provider: "u.provider",
-  device: "u.device_id",
+  device: "coalesce(nullif(trim(d.name), ''), 'Unnamed device')",
 };
 
 export async function handleTimeseries(request: Request, env: Env): Promise<Response> {
@@ -204,21 +232,31 @@ export async function handleTimeseries(request: Request, env: Env): Promise<Resp
     return json({ error: `group must be one of: none, ${Object.keys(GROUP_DIMENSIONS).join(", ")}` }, 400);
   }
 
+  const join = group === "device" ? "LEFT JOIN devices d ON d.id = u.device_id" : "";
   const select = groupExpr
     ? `SELECT ${periodExpr} AS period, ${groupExpr} AS key, ${METRICS_SQL}`
     : `SELECT ${periodExpr} AS period, ${METRICS_SQL}`;
-  const groupBy = groupExpr ? `GROUP BY period, key ORDER BY period, tokens DESC` : `GROUP BY period ORDER BY period`;
+  const groupBy = groupExpr ? `GROUP BY period, key` : `GROUP BY period`;
 
   const rows = await env.DB
-    .prepare(`${select} FROM daily_usage u ${f.where} ${groupBy}`)
+    .prepare(`${select} FROM daily_usage u ${join} ${f.where} ${groupBy}`)
     .bind(...f.params)
     .all();
+
+  type SeriesRow = ModelMetrics & { period: string; key?: string };
+  let series = rows.results as unknown as SeriesRow[];
+  if (group === "model") {
+    series = mergeModelRows(series, { modelField: "key", groupBy: (row) => row.period });
+  }
+  series.sort((a, b) =>
+    a.period === b.period ? b.tokens - a.tokens : a.period < b.period ? -1 : 1
+  );
 
   return cachedJson(request, {
     range: rangeInfo(url),
     interval,
     group: groupExpr ? group : null,
-    series: rows.results,
+    series,
   });
 }
 
@@ -228,7 +266,7 @@ const BREAKDOWN_DIMENSIONS: Record<string, string> = {
   client: "u.client AS client",
   model: "u.model AS model",
   provider: "u.provider AS provider",
-  device: "u.device_id AS device",
+  device: "coalesce(nullif(trim(d.name), ''), 'Unnamed device') AS device",
   date: "u.date AS date",
   month: "substr(u.date, 1, 7) AS month",
   year: "substr(u.date, 1, 4) AS year",
@@ -255,22 +293,32 @@ export async function handleBreakdown(request: Request, env: Env): Promise<Respo
 
   const selectDims = by.map((dim) => BREAKDOWN_DIMENSIONS[dim]).join(", ");
   const groupDims = by.map((dim) => dim).join(", ");
+  const join = by.includes("device") ? "LEFT JOIN devices d ON d.id = u.device_id" : "";
 
-  const rows = await env.DB
+  const result = await env.DB
     .prepare(
       `SELECT ${selectDims}, ${METRICS_SQL}
-       FROM daily_usage u ${f.where}
-       GROUP BY ${groupDims}
-       ORDER BY tokens DESC
-       ${limit ? `LIMIT ${limit}` : ""}`
+       FROM daily_usage u ${join} ${f.where}
+       GROUP BY ${groupDims}`
     )
     .bind(...f.params)
     .all();
 
+  type BreakdownRow = ModelMetrics & Record<string, unknown>;
+  let rows = result.results as unknown as BreakdownRow[];
+  if (by.includes("model")) {
+    const others = by.filter((dim) => dim !== "model");
+    rows = mergeModelRows(rows, {
+      groupBy: (row) => others.map((dim) => String(row[dim])).join("\u0000"),
+    });
+  }
+  rows.sort(byTokensDesc);
+  if (limit !== null) rows = rows.slice(0, limit);
+
   return cachedJson(request, {
     range: rangeInfo(url),
     by,
-    rows: rows.results,
+    rows,
   });
 }
 
@@ -304,7 +352,8 @@ interface GraphUsageRow {
  * GET /api/graph — emits the same TokenContributionData shape as the CLI's
  * `tokens graph` export (meta / summary / years / contributions with
  * per-client rows), reconstructed from the stored matrix. This makes the
- * endpoint both the heatmap data source and a full-fidelity export.
+ * endpoint both the heatmap data source and a full-fidelity export, so
+ * model ids stay raw here.
  */
 export async function handleGraph(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
@@ -405,7 +454,7 @@ export async function handleGraph(request: Request, env: Env): Promise<Response>
   const maxCost = [...days.values()].reduce((m, d) => Math.max(m, d.cost), 0);
   const totalTokens = [...days.values()].reduce((s, d) => s + d.tokens, 0);
   const totalCost = [...days.values()].reduce((s, d) => s + d.cost, 0);
-  const activeDays = [...days.values()].filter((d) => d.tokens > 0).length;
+  const activeDays = [...days.values()].filter((d) => d.tokens > 0 || d.messages > 0).length;
 
   const years = new Map<string, { totalTokens: number; totalCost: number; start: string; end: string }>();
   for (const [date, d] of days) {
@@ -463,7 +512,7 @@ export async function handleMeta(request: Request, env: Env): Promise<Response> 
     env.DB.prepare(`SELECT DISTINCT client FROM daily_usage ORDER BY client`),
     env.DB.prepare(`SELECT DISTINCT model, provider FROM daily_usage ORDER BY model, provider`),
     env.DB.prepare(`SELECT DISTINCT provider FROM daily_usage WHERE provider != '' ORDER BY provider`),
-    env.DB.prepare(`SELECT id, name FROM devices ORDER BY last_seen DESC`),
+    env.DB.prepare(`SELECT name FROM devices ORDER BY last_seen DESC`),
     env.DB.prepare(`SELECT min(date) AS start, max(date) AS end FROM daily_usage`),
     env.DB.prepare(`SELECT max(last_seen) AS lastSeen FROM devices`),
   ]);
@@ -473,9 +522,15 @@ export async function handleMeta(request: Request, env: Env): Promise<Response> 
 
   return cachedJson(request, {
     clients: (clients.results as Array<{ client: string }>).map((r) => r.client),
-    models: models.results,
+    // Raw spellings drive the model= filter; canonical shows the merged name.
+    models: (models.results as Array<{ model: string; provider: string }>).map((r) => ({
+      ...r,
+      canonical: canonicalModel(r.model),
+    })),
     providers: (providers.results as Array<{ provider: string }>).map((r) => r.provider),
-    devices: devices.results,
+    devices: (devices.results as Array<{ name: string | null }>).map(
+      (r) => r.name?.trim() || "Unnamed device"
+    ),
     range: { start: rangeRow.start ?? null, end: rangeRow.end ?? null },
     lastUpdatedAt: lastSeen != null ? new Date(lastSeen).toISOString() : null,
   });
@@ -503,12 +558,12 @@ export async function handleDevices(request: Request, env: Env): Promise<Respons
     .all<Record<string, unknown>>();
 
   return cachedJson(request, {
-    devices: rows.results.map((d) => ({
-      ...d,
-      displayName:
-        (typeof d.name === "string" && d.name.trim()) ||
-        (d.id === LEGACY_DEVICE_KEY ? LEGACY_DEVICE_NAME : "Unnamed device"),
-      mcpServers: typeof d.mcpServers === "string" ? JSON.parse(d.mcpServers) : null,
+    devices: rows.results.map(({ id, name, ...rest }) => ({
+      name:
+        (typeof name === "string" && name.trim()) ||
+        (id === LEGACY_DEVICE_KEY ? LEGACY_DEVICE_NAME : "Unnamed device"),
+      ...rest,
+      mcpServers: typeof rest.mcpServers === "string" ? JSON.parse(rest.mcpServers) : null,
     })),
   });
 }
@@ -522,13 +577,15 @@ export async function handleSubmissions(request: Request, env: Env): Promise<Res
 
   const rows = await env.DB
     .prepare(
-      `SELECT id, device_id AS deviceId, received_at AS receivedAt,
-              date_start AS dateStart, date_end AS dateEnd,
-              total_tokens AS totalTokens, total_cost AS totalCost,
-              row_count AS rowCount, changed_days AS changedDays,
-              cli_version AS cliVersion, generated_at AS generatedAt,
-              mode, warning_count AS warningCount
-       FROM submissions ORDER BY received_at DESC LIMIT ?`
+      `SELECT s.id, coalesce(nullif(trim(d.name), ''), 'Unnamed device') AS device,
+              s.received_at AS receivedAt,
+              s.date_start AS dateStart, s.date_end AS dateEnd,
+              s.total_tokens AS totalTokens, s.total_cost AS totalCost,
+              s.row_count AS rowCount, s.changed_days AS changedDays,
+              s.cli_version AS cliVersion, s.generated_at AS generatedAt,
+              s.mode, s.warning_count AS warningCount
+       FROM submissions s LEFT JOIN devices d ON d.id = s.device_id
+       ORDER BY s.received_at DESC LIMIT ?`
     )
     .bind(limit)
     .all();

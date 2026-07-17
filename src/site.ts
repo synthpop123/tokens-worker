@@ -8,20 +8,28 @@
  * chart, weekday profile and heatmap) with per-day active time where the
  * CLI reported it, and the device inventory with CLI metadata (version,
  * sessions, active-time totals, MCP servers). Model rows are merged under
- * canonical names (see models.ts) — the raw spellings stay visible on
- * /api/stats.
+ * canonical names (see models.ts). "Active" days count messages too:
+ * early-2025 Cursor logs carry message counts but no token usage, and
+ * those days really were active.
  *
- * Cached in the edge cache for 5 minutes on top of the D1 aggregation, so
- * page loads normally never touch the database.
+ * Serving path: the payload lives in KV, refreshed on every accepted
+ * submission (the only event that changes the data — the account's cron
+ * quota is full), so requests never wait on D1 — cold and hot paths alike
+ * are a single KV read. A day-rollover guard recomposes when no device
+ * has reported since midnight. Composition itself is one D1 batch of
+ * three statements: the per-day usage matrix (a few thousand rows at
+ * personal scale), daily activity, and the device inventory; all four
+ * ranges are aggregated here in JS.
  */
 
 import type { Env } from "./http";
-import { corsHeaders } from "./http";
-import { METRICS_SQL } from "./read";
+import { corsHeaders, isoToday } from "./http";
 import { canonicalModel } from "./models";
 
-const TIME_ZONE = "Asia/Shanghai";
 const CACHE_SECONDS = 300;
+const STALE_SECONDS = 3600;
+export const SITE_KEY = "site-v1";
+
 const RANGES = [
   { key: "week", days: 7 },
   { key: "month", days: 30 },
@@ -40,17 +48,11 @@ interface Metrics {
   cost: number;
 }
 
-interface ModelRow extends Metrics {
-  model: string;
-  providers: string | null;
-}
-
-interface DailyProviderRow {
+interface UsageRow extends Metrics {
   date: string;
+  client: string;
+  model: string;
   provider: string;
-  tokens: number;
-  cost: number;
-  messages: number;
 }
 
 interface DailyActivityRow {
@@ -85,13 +87,6 @@ interface SiteDay {
   providers: Record<string, { tokens: number; cost: number }>;
 }
 
-const isoDay = new Intl.DateTimeFormat("en-CA", {
-  timeZone: TIME_ZONE,
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
-
 /** Shift an ISO day by whole days; anchoring at noon UTC is DST-proof. */
 function shiftDays(day: string, delta: number): string {
   const date = new Date(`${day}T12:00:00Z`);
@@ -99,86 +94,113 @@ function shiftDays(day: string, delta: number): string {
   return date.toISOString().slice(0, 10);
 }
 
-/** Merge per-effort model rows under their canonical names. */
-function mergeModels(rows: ModelRow[]): ModelRow[] {
-  const merged = new Map<string, ModelRow>();
-  for (const row of rows) {
-    const model = canonicalModel(row.model);
-    const target = merged.get(model);
-    if (!target) {
-      merged.set(model, { ...row, model });
-      continue;
-    }
-    target.input += row.input;
-    target.output += row.output;
-    target.cacheRead += row.cacheRead;
-    target.cacheWrite += row.cacheWrite;
-    target.reasoning += row.reasoning;
-    target.tokens += row.tokens;
-    target.messages += row.messages;
-    target.cost += row.cost;
-    const providers = new Set(
-      [target.providers, row.providers]
-        .flatMap((list) => (list ?? "").split(","))
-        .filter((provider) => provider.length > 0)
-    );
-    target.providers = [...providers].join(",");
-  }
-  return [...merged.values()].sort((a, b) => b.tokens - a.tokens);
+function emptyMetrics(): Metrics {
+  return {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    reasoning: 0,
+    tokens: 0,
+    messages: 0,
+    cost: 0,
+  };
 }
 
-export async function handleSite(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  const origin = request.headers.get("Origin");
-  const withCors = (response: Response): Response => {
-    const out = new Response(response.body, response);
-    for (const [key, value] of Object.entries(corsHeaders(origin))) {
-      out.headers.set(key, value);
+function addMetrics(target: Metrics, row: Metrics): void {
+  target.input += row.input;
+  target.output += row.output;
+  target.cacheRead += row.cacheRead;
+  target.cacheWrite += row.cacheWrite;
+  target.reasoning += row.reasoning;
+  target.tokens += row.tokens;
+  target.messages += row.messages;
+  target.cost += row.cost;
+}
+
+/** One range's aggregation state, filled row by row. */
+class RangeAgg {
+  totals = emptyMetrics();
+  byModel = new Map<string, Metrics & { model: string; providers: Set<string> }>();
+  byClient = new Map<string, Metrics & { client: string }>();
+  byProvider = new Map<string, Metrics & { provider: string }>();
+  days = new Map<string, { tokens: number; messages: number }>();
+
+  constructor(readonly from: string | null) {}
+
+  add(row: UsageRow, model: string): void {
+    addMetrics(this.totals, row);
+
+    let m = this.byModel.get(model);
+    if (!m) {
+      m = { ...emptyMetrics(), model, providers: new Set() };
+      this.byModel.set(model, m);
     }
-    // cache.match returns the entry with Cache-Control rewritten to the
-    // zone's Browser Cache TTL (a day), which would let browsers hold
-    // stale payloads long past the intended 5 minutes — restate ours.
-    out.headers.set("Cache-Control", `public, max-age=${CACHE_SECONDS}`);
-    return out;
-  };
+    addMetrics(m, row);
+    if (row.provider) m.providers.add(row.provider);
 
-  // CORS headers are attached per-request after lookup, so the cached
-  // entry itself stays origin-neutral.
-  const cacheKey = new Request(new URL("/api/site", request.url).toString());
-  const cache = caches.default;
-  const hit = await cache.match(cacheKey);
-  if (hit) return withCors(hit);
+    let c = this.byClient.get(row.client);
+    if (!c) {
+      c = { ...emptyMetrics(), client: row.client };
+      this.byClient.set(row.client, c);
+    }
+    addMetrics(c, row);
 
-  const today = isoDay.format(new Date());
+    let p = this.byProvider.get(row.provider);
+    if (!p) {
+      p = { ...emptyMetrics(), provider: row.provider };
+      this.byProvider.set(row.provider, p);
+    }
+    addMetrics(p, row);
 
-  const rangeStatements = RANGES.flatMap(({ days }) => {
-    const where = days ? "WHERE u.date >= ?" : "";
-    const bind = (sql: string) => {
-      const statement = env.DB.prepare(sql);
-      return days ? statement.bind(shiftDays(today, 1 - days)) : statement;
+    let day = this.days.get(row.date);
+    if (!day) {
+      day = { tokens: 0, messages: 0 };
+      this.days.set(row.date, day);
+    }
+    day.tokens += row.tokens;
+    day.messages += row.messages;
+  }
+
+  serialize() {
+    const dates = [...this.days.keys()].sort();
+    let activeDays = 0;
+    for (const day of this.days.values()) {
+      if (day.tokens > 0 || day.messages > 0) activeDays++;
+    }
+    const byTokensDesc = (a: Metrics, b: Metrics) => b.tokens - a.tokens;
+    return {
+      from: this.from,
+      totals: {
+        ...this.totals,
+        activeDays,
+        firstDate: dates[0] ?? null,
+        lastDate: dates[dates.length - 1] ?? null,
+      },
+      byModel: [...this.byModel.values()]
+        .sort(byTokensDesc)
+        .map(({ providers, ...rest }) => ({ ...rest, providers: [...providers].join(",") })),
+      byClient: [...this.byClient.values()].sort(byTokensDesc),
+      byProvider: [...this.byProvider.values()].sort(byTokensDesc),
     };
-    return [
-      bind(`SELECT ${METRICS_SQL},
-              count(DISTINCT CASE WHEN (u.input + u.output + u.cache_read + u.cache_write + u.reasoning) > 0 THEN u.date END) AS activeDays,
-              min(u.date) AS firstDate,
-              max(u.date) AS lastDate
-            FROM daily_usage u ${where}`),
-      bind(`SELECT u.model, group_concat(DISTINCT u.provider) AS providers, ${METRICS_SQL}
-            FROM daily_usage u ${where} GROUP BY u.model ORDER BY tokens DESC`),
-      bind(`SELECT u.client, ${METRICS_SQL}
-            FROM daily_usage u ${where} GROUP BY u.client ORDER BY tokens DESC`),
-      bind(`SELECT u.provider, ${METRICS_SQL}
-            FROM daily_usage u ${where} GROUP BY u.provider ORDER BY tokens DESC`),
-    ];
-  });
+  }
+}
 
-  const results = await env.DB.batch([
-    ...rangeStatements,
+/** Compose the full /api/site JSON from D1 (one batch, three statements). */
+export async function composeSiteBody(env: Env): Promise<string> {
+  const today = isoToday();
+
+  const [usage, activity, deviceRows] = await env.DB.batch([
     env.DB.prepare(
-      `SELECT u.date, u.provider,
+      `SELECT u.date, u.client, u.model, u.provider,
+              sum(u.input) AS input, sum(u.output) AS output,
+              sum(u.cache_read) AS cacheRead, sum(u.cache_write) AS cacheWrite,
+              sum(u.reasoning) AS reasoning,
               sum(u.input + u.output + u.cache_read + u.cache_write + u.reasoning) AS tokens,
-              sum(u.messages) AS messages,
-              sum(u.cost) AS cost
-       FROM daily_usage u GROUP BY u.date, u.provider ORDER BY u.date`
+              sum(u.messages) AS messages, sum(u.cost) AS cost
+       FROM daily_usage u
+       GROUP BY u.date, u.client, u.model, u.provider
+       ORDER BY u.date`
     ),
     env.DB.prepare(
       `SELECT u.date, sum(u.active_time_ms) AS active
@@ -199,36 +221,10 @@ export async function handleSite(request: Request, env: Env, ctx: ExecutionConte
        GROUP BY d.id ORDER BY d.last_seen DESC`
     ),
   ]);
-  const base = RANGES.length * 4;
 
-  const ranges: Record<string, unknown> = {};
-  RANGES.forEach(({ key, days }, i) => {
-    const [totals, byModel, byClient, byProvider] = results.slice(i * 4, i * 4 + 4);
-    // sum() over zero rows yields nulls — normalize so the client can trust
-    // the numbers.
-    const t = (totals.results[0] ?? {}) as Record<string, unknown>;
-    ranges[key] = {
-      from: days ? shiftDays(today, 1 - days) : null,
-      totals: {
-        input: t.input ?? 0,
-        output: t.output ?? 0,
-        cacheRead: t.cacheRead ?? 0,
-        cacheWrite: t.cacheWrite ?? 0,
-        reasoning: t.reasoning ?? 0,
-        tokens: t.tokens ?? 0,
-        messages: t.messages ?? 0,
-        cost: t.cost ?? 0,
-        activeDays: t.activeDays ?? 0,
-        firstDate: t.firstDate ?? null,
-        lastDate: t.lastDate ?? null,
-      },
-      byModel: mergeModels(byModel.results as unknown as ModelRow[]),
-      byClient: byClient.results,
-      byProvider: byProvider.results,
-    };
-  });
-
-  // Pivot (date, provider) rows into one entry per day with a provider map.
+  const aggs = RANGES.map(
+    ({ days }) => new RangeAgg(days ? shiftDays(today, 1 - days) : null)
+  );
   const daily = new Map<string, SiteDay>();
   const dayFor = (date: string): SiteDay => {
     let day = daily.get(date);
@@ -238,7 +234,12 @@ export async function handleSite(request: Request, env: Env, ctx: ExecutionConte
     }
     return day;
   };
-  for (const row of results[base].results as unknown as DailyProviderRow[]) {
+
+  for (const row of usage.results as unknown as UsageRow[]) {
+    const model = canonicalModel(row.model);
+    for (const agg of aggs) {
+      if (agg.from === null || row.date >= agg.from) agg.add(row, model);
+    }
     const day = dayFor(row.date);
     day.tokens += row.tokens;
     day.cost += row.cost;
@@ -251,12 +252,18 @@ export async function handleSite(request: Request, env: Env, ctx: ExecutionConte
       day.providers[provider] = slot;
     }
   }
-  for (const row of results[base + 1].results as unknown as DailyActivityRow[]) {
+
+  for (const row of activity.results as unknown as DailyActivityRow[]) {
     if (!row.active || row.active <= 0) continue;
     dayFor(row.date).active = row.active;
   }
 
-  const devices = (results[base + 2].results as unknown as DeviceRow[]).map((device) => ({
+  const ranges: Record<string, unknown> = {};
+  RANGES.forEach(({ key }, i) => {
+    ranges[key] = aggs[i].serialize();
+  });
+
+  const devices = (deviceRows.results as unknown as DeviceRow[]).map((device) => ({
     name: device.name?.trim() || "Unnamed device",
     firstSeen: device.firstSeen,
     lastSeen: device.lastSeen,
@@ -273,17 +280,64 @@ export async function handleSite(request: Request, env: Env, ctx: ExecutionConte
     cost: device.cost ?? 0,
   }));
 
-  const body = JSON.stringify({
+  return JSON.stringify({
     generatedAt: new Date().toISOString(),
     today,
     ranges,
     daily: [...daily.values()].sort((a, b) => (a.date < b.date ? -1 : 1)),
     devices,
   });
+}
+
+/** Store a composed payload; the composition day rides along as metadata
+ *  so the read path can detect day rollover without parsing the body. */
+function putSiteCache(env: Env, body: string): Promise<void> {
+  return env.SITE_CACHE.put(SITE_KEY, body, { metadata: { today: isoToday() } });
+}
+
+/** Recompute the site payload and store it in KV. */
+export async function refreshSiteCache(env: Env): Promise<string> {
+  const body = await composeSiteBody(env);
+  await putSiteCache(env, body);
+  return body;
+}
+
+export async function handleSite(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const headers = {
     "Content-Type": "application/json",
-    "Cache-Control": `public, max-age=${CACHE_SECONDS}`,
+    // stale-while-revalidate: after the 5 minutes, browsers reuse the
+    // stale copy instantly and refetch in the background.
+    "Cache-Control": `public, max-age=${CACHE_SECONDS}, stale-while-revalidate=${STALE_SECONDS}`,
   };
+  const withCors = (response: Response): Response => {
+    const out = new Response(response.body, response);
+    for (const [key, value] of Object.entries(corsHeaders(request.headers.get("Origin")))) {
+      out.headers.set(key, value);
+    }
+    // cache.match rewrites Cache-Control to the zone's Browser Cache TTL
+    // (a day), which would let browsers pin stale payloads — restate ours.
+    out.headers.set("Cache-Control", headers["Cache-Control"]);
+    return out;
+  };
+
+  // Two cache tiers, no D1 on either: the PoP-local edge cache (~10 ms,
+  // 5-minute TTL), then KV (~50 ms hot, a few hundred ms on a cold PoP —
+  // rewritten by every accepted submission). The cached entry itself
+  // stays origin-neutral; CORS is attached per-request after lookup.
+  const cacheKey = new Request(new URL("/api/site", request.url).toString());
+  const cache = caches.default;
+  const hit = await cache.match(cacheKey);
+  if (hit) return withCors(hit);
+
+  // Recompose inline only when the KV entry is missing (first deploy) or
+  // was composed on a previous calendar day and no device has reported
+  // since midnight (range windows must slide anyway).
+  const { value, metadata } = await env.SITE_CACHE.getWithMetadata<{ today?: string }>(SITE_KEY);
+  let body = value;
+  if (body === null || metadata?.today !== isoToday()) {
+    body = await composeSiteBody(env);
+    ctx.waitUntil(putSiteCache(env, body));
+  }
   ctx.waitUntil(cache.put(cacheKey, new Response(body, { headers })));
   return withCors(new Response(body, { headers }));
 }

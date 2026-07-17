@@ -323,7 +323,11 @@ export function validatePayload(payload: SubmissionPayload): ValidationResult {
       );
     }
 
-    const activeDays = payload.contributions.filter((d) => (d.totals?.tokens ?? 0) > 0).length;
+    // Message-only days count as active — matches the CLI's own summary
+    // (early-2025 Cursor logs carry message counts without token usage).
+    const activeDays = payload.contributions.filter(
+      (d) => (d.totals?.tokens ?? 0) > 0 || (d.totals?.messages ?? 0) > 0
+    ).length;
     if (activeDays !== summary.activeDays) {
       warnings.push(
         `Active days mismatch: summary=${summary.activeDays}, calculated=${activeDays}`

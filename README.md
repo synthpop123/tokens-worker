@@ -1,8 +1,10 @@
 # tokens-worker
 
-Self-hosted backend for the [`tokens`](https://github.com/missuo/tokens) CLI, running on Cloudflare Workers + D1 and served at `https://tokens.lkwplus.com`.
+Self-hosted backend for the [`tokens`](https://github.com/missuo/tokens) CLI, running on Cloudflare Workers + D1 (+ KV for the precomposed site payload, R2 for backups) and served at `https://tokens.lkwplus.com`.
 
 Each machine runs `tokens serve` with `TOKENS_API_URL=https://tokens.lkwplus.com`; the CLI POSTs a full rescan of its local session logs every 30 minutes. This Worker implements the official server's submission contract and merge semantics, stores the full usage matrix in D1, and exposes a filterable read API for the personal site.
+
+Every accepted submission also (a) rewrites the precomposed `/api/site` payload in KV, (b) archives the raw payload to R2 (`raw/<deviceId>/latest.json` — submissions are full rescans, so the latest one reproduces the device's whole history), and (c) once per Asia/Shanghai day exports all four tables to R2 (`backup/YYYY-MM-DD.json`), a long-term backup beyond D1's 30-day Time Travel. Submissions are the only write event, so no cron is needed.
 
 ## Storage model
 
@@ -40,21 +42,24 @@ Not implemented: the browser GitHub-OAuth device flow (`POST /api/auth/device[/p
 
 ### Public read endpoints (no auth; CORS: lkwplus.com + localhost; 5-min cache)
 
+Internal device ids are never exposed — public rows identify devices by display name, and the `device=` filter takes names. Model rows on the aggregate endpoints are merged under **canonical names** (per-effort variants like `claude-fable-5-thinking-max` merged into `claude-fable-5` — rules + alias table in `src/models.ts`); `/api/graph` keeps raw spellings as the full-fidelity export. "Active days" count any activity, messages included (early-2025 Cursor logs carry message counts without token usage).
+
 All of them accept the same filters, combinable freely:
 
 - `from=YYYY-MM-DD`, `to=YYYY-MM-DD` — inclusive date bounds
-- `client=`, `model=`, `provider=`, `device=` — comma-separated exact matches
+- `client=`, `model=`, `provider=` — comma-separated exact matches (raw ids)
+- `device=` — comma-separated device names
 
 Every aggregate row carries the full metric set: `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning`, `tokens` (sum of the five), `messages`, `cost`.
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/site` | Precomposed dashboard view for lkwplus.com/tokens, one request for the whole page: per-range (`week`/`month`/`quarter`/`all`) totals + breakdowns with **canonical model names** (per-effort variants like `claude-fable-5-thinking-max` merged into `claude-fable-5` — rules + alias table in `src/models.ts`), full daily series split by provider with per-day `active` time where reported (for the stacked trend chart, weekday profile and heatmap), and the device inventory incl. CLI version, session count, active-time metrics and MCP servers. No filters; served from the edge cache (5 min) so page loads normally skip D1 entirely |
-| `GET /api/stats` | Overview: `totals` (+ `activeDays`, `firstDate`, `lastDate`), `daily`, `byClient`, `byModel` (with `providers`), `byProvider`, `byDevice` — raw model spellings |
+| `GET /api/site` | Precomposed dashboard view for lkwplus.com/tokens, one request for the whole page: per-range (`week`/`month`/`quarter`/`all`) totals + breakdowns, full daily series split by provider with per-day `active` time where reported (for the stacked trend chart, weekday profile and heatmap), and the device inventory incl. CLI version, session count, active-time metrics and MCP servers. No filters; served from the edge cache (5 min per PoP), falling back to KV (rewritten on every accepted submission) — requests never wait on D1. `Cache-Control: max-age=300, stale-while-revalidate=3600` |
+| `GET /api/stats` | Overview: `totals` (+ `activeDays`, `firstDate`, `lastDate`), `daily`, `byClient`, `byModel` (canonical, with `providers`), `byProvider`, `byDevice` (by name) |
 | `GET /api/timeseries?interval=day\|week\|month\|year&group=none\|client\|model\|provider\|device` | `{series: [{period, key?, ...metrics}]}`, optionally split by one dimension — e.g. `interval=day&group=client` powers stacked area charts |
 | `GET /api/breakdown?by=client,model&limit=` | Arbitrary multi-dimension rollup; `by` is any combination of `client`, `model`, `provider`, `device`, `date`, `month`, `year` (mirrors the CLI's `--group-by`) |
-| `GET /api/graph?year=YYYY` | The same `TokenContributionData` shape as a `tokens graph` export (`meta`, `summary`, `years`, `contributions` with per-client rows, `intensity` 0–4, `activeTimeMs`), reconstructed from the matrix — both the heatmap source and a full-fidelity export; filters apply, so per-client graphs work |
-| `GET /api/meta` | Distinct `clients`, `models` (with provider), `providers`, `devices`, data `range`, `lastUpdatedAt` — for building filter UIs |
+| `GET /api/graph?year=YYYY` | The same `TokenContributionData` shape as a `tokens graph` export (`meta`, `summary`, `years`, `contributions` with per-client rows, `intensity` 0–4, `activeTimeMs`), reconstructed from the matrix — both the heatmap source and a full-fidelity export (raw model ids); filters apply, so per-client graphs work |
+| `GET /api/meta` | Distinct `clients`, `models` (raw + `canonical`, with provider), `providers`, device names, data `range`, `lastUpdatedAt` — for building filter UIs |
 | `GET /api/devices` | Device inventory: name, first/last seen, CLI version, time metrics, MCP servers, per-device totals |
 | `GET /api/submissions?limit=50` | Submission audit log (`mode`, `rowCount`, `changedDays`, `warningCount`, CLI version) for checking report cadence |
 | `GET /api/health` (also `/`) | Liveness check |
@@ -78,6 +83,8 @@ curl "https://tokens.lkwplus.com/api/graph?year=2026"
 npm install
 npx wrangler d1 create tokens-usage        # put the database_id into wrangler.jsonc
 npx wrangler d1 migrations apply tokens-usage --remote
+npx wrangler kv namespace create SITE_CACHE  # put the id into wrangler.jsonc
+npx wrangler r2 bucket create tokens-archive
 npx wrangler secret put TOKENS_API_TOKEN   # same token as in ~/.config/tokens/credentials.json
 npm run deploy
 ```
@@ -103,15 +110,19 @@ TOKENS_API_URL=http://localhost:8787 tokens submit
 
 ```
 src/index.ts             Router + endpoint table
-src/http.ts              Env, CORS allowlist, constant-time bearer auth
+src/http.ts              Env, CORS allowlist, timing-safe bearer auth, TZ
 src/payload.ts           Submission types, normalization, official validation
 src/merge.ts             Per-day per-client merge engine (regression guard,
                          revision floors, authoritative coverage)
-src/submit.ts            Write path + CLI-facing endpoints
+src/submit.ts            Write path + CLI-facing endpoints; drives the KV
+                         site refresh and R2 archives
 src/read.ts              Public read API (shared filter parser)
-src/models.ts            Canonical model names for /api/site (suffix rules +
-                         alias table; extend ALIASES for new spellings)
-src/site.ts              /api/site — precomposed, edge-cached dashboard view
+src/models.ts            Canonical model names shared by all aggregate
+                         endpoints (suffix rules + alias table; extend
+                         ALIASES for new spellings)
+src/site.ts              /api/site — precomposed dashboard view (edge cache
+                         over KV over a single D1 batch)
+src/backup.ts            Daily full-table export to R2
 migrations/              D1 schema (0003 is the current clean rebuild)
-wrangler.jsonc           Worker config (custom domain, D1 binding, vars)
+wrangler.jsonc           Worker config (custom domain, D1/KV/R2 bindings)
 ```

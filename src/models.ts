@@ -1,12 +1,14 @@
 /**
- * Canonical model names for the site view (/api/site).
+ * Canonical model names, shared by every aggregation endpoint.
  *
  * The CLIs report one id per (model x reasoning effort x serving tier):
  * `claude-fable-5-thinking-max`, `gpt-5-codex-high`, `composer-2-fast`, ...
- * For the public dashboard those are all the same model, so /api/site merges
- * rows under a canonical name. Mechanical suffixes are stripped by rule;
- * anything the rules cannot express (Cursor's family-last spellings, dated
- * snapshots) is listed in ALIASES.
+ * For aggregate views those are all the same model, so /api/site, /api/stats,
+ * /api/breakdown and /api/timeseries merge rows under a canonical name
+ * (mergeModelRows / canonicalizeModelRows below). /api/graph keeps the raw
+ * spellings — it is the full-fidelity export. Mechanical suffixes are
+ * stripped by rule; anything the rules cannot express (Cursor's family-last
+ * spellings, dated snapshots) is listed in ALIASES.
  *
  * Maintenance: when a new model shows up with a spelling the rules get
  * wrong, add an ALIASES entry. Mapping a raw name to itself pins it and
@@ -45,4 +47,62 @@ export function canonicalModel(raw: string): string {
     for (const rule of SUFFIX_RULES) name = name.replace(rule, "");
   }
   return ALIASES[name] ?? name;
+}
+
+export interface ModelMetrics {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoning: number;
+  tokens: number;
+  messages: number;
+  cost: number;
+}
+
+const METRIC_KEYS: (keyof ModelMetrics)[] = [
+  "input",
+  "output",
+  "cacheRead",
+  "cacheWrite",
+  "reasoning",
+  "tokens",
+  "messages",
+  "cost",
+];
+
+/**
+ * Merge aggregate rows whose model ids share a canonical name: metrics are
+ * summed, comma-separated `providers` lists unioned, everything else keeps
+ * the first row's value. `groupBy` scopes the merge for rows that carry
+ * extra dimensions (e.g. per-period timeseries rows). Output preserves
+ * first-appearance order; callers re-sort as their endpoint requires.
+ */
+export function mergeModelRows<T extends ModelMetrics>(
+  rows: T[],
+  options: { modelField?: string; groupBy?: (row: T) => string } = {},
+): T[] {
+  const modelField = options.modelField ?? "model";
+  const merged = new Map<string, T>();
+  for (const row of rows) {
+    const fields = row as Record<string, unknown>;
+    const model = canonicalModel(String(fields[modelField] ?? ""));
+    const key = (options.groupBy ? `${options.groupBy(row)}\u0000` : "") + model;
+    const target = merged.get(key);
+    if (!target) {
+      merged.set(key, { ...row, [modelField]: model });
+      continue;
+    }
+    for (const metric of METRIC_KEYS) target[metric] += row[metric];
+    const targetFields = target as Record<string, unknown>;
+    if (typeof targetFields.providers === "string" || typeof fields.providers === "string") {
+      const providers = new Set(
+        [targetFields.providers, fields.providers]
+          .flatMap((list) => (typeof list === "string" ? list.split(",") : []))
+          .filter((provider) => provider.length > 0),
+      );
+      targetFields.providers = [...providers].join(",");
+    }
+  }
+  return [...merged.values()];
 }

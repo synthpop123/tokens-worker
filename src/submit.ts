@@ -27,6 +27,8 @@ import {
   mergeDay,
   modelKey,
 } from "./merge";
+import { refreshSiteCache } from "./site";
+import { ensureDailyBackup } from "./backup";
 
 interface StoredUsageRow {
   date: string;
@@ -82,14 +84,15 @@ INSERT INTO daily_usage
    parser_revision)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
-export async function handleSubmit(request: Request, env: Env): Promise<Response> {
+export async function handleSubmit(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!(await isAuthorized(request, env))) {
     return json({ error: "Invalid API token" }, 401);
   }
 
+  const rawBody = await request.text();
   let payload: SubmissionPayload;
   try {
-    payload = (await request.json()) as SubmissionPayload;
+    payload = JSON.parse(rawBody) as SubmissionPayload;
   } catch {
     return json({ error: "Invalid JSON body" }, 400);
   }
@@ -311,6 +314,22 @@ export async function handleSubmit(request: Request, env: Env): Promise<Response
   }
   if (batch.length > 0) await env.DB.batch(batch);
 
+  // Archive the accepted payload verbatim. Submissions are full rescans,
+  // so the latest one per device reproduces its whole history — enough to
+  // replay-rebuild after a schema change (daily R2 exports cover the rest).
+  ctx.waitUntil(
+    env.ARCHIVE.put(`raw/${deviceId}/latest.json`, rawBody, {
+      httpMetadata: { contentType: "application/json" },
+      customMetadata: { submissionId, receivedAt: String(now) },
+    })
+  );
+
+  // Submissions are the only event that changes the data, so they drive
+  // the KV site payload and the daily R2 export directly (the account's
+  // cron quota is full; devices report every 30 minutes anyway).
+  ctx.waitUntil(refreshSiteCache(env));
+  ctx.waitUntil(ensureDailyBackup(env));
+
   // ---- Account-wide metrics for the response (official recalculates) -----
   const metrics = await env.DB
     .prepare(
@@ -319,7 +338,8 @@ export async function handleSubmit(request: Request, env: Env): Promise<Response
          coalesce(sum(cost), 0) AS totalCost,
          min(date) AS dateStart,
          max(date) AS dateEnd,
-         count(DISTINCT CASE WHEN (input + output + cache_read + cache_write + reasoning) > 0 THEN date END) AS activeDays
+         count(DISTINCT CASE WHEN (input + output + cache_read + cache_write + reasoning) > 0
+                               OR messages > 0 THEN date END) AS activeDays
        FROM daily_usage`
     )
     .first<{
@@ -358,7 +378,11 @@ export async function handleAuthToken(request: Request, env: Env): Promise<Respo
 }
 
 /** DELETE /api/settings/submitted-data — wipe everything for this account. */
-export async function handleDeleteSubmittedData(request: Request, env: Env): Promise<Response> {
+export async function handleDeleteSubmittedData(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext
+): Promise<Response> {
   if (!(await isAuthorized(request, env))) {
     return json({ error: "Invalid API token" }, 401);
   }
@@ -375,6 +399,7 @@ export async function handleDeleteSubmittedData(request: Request, env: Env): Pro
     env.DB.prepare(`DELETE FROM devices`),
     env.DB.prepare(`DELETE FROM submissions`),
   ]);
+  ctx.waitUntil(refreshSiteCache(env));
   return json({ deleted: true, deletedSubmissions: n });
 }
 

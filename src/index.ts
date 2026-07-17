@@ -15,11 +15,16 @@
  *   GET    /api/me/stats                TUI remote tab
  *
  * Read side — public, it is just usage data (CORS for lkwplus.com,
- * 5-minute cache):
- *   GET /api/site — precomposed dashboard view for lkwplus.com/tokens
- *       (canonical model names, provider-split daily series, devices)
+ * 5-minute cache; internal device ids are never exposed):
+ *   GET /api/site — precomposed dashboard view for lkwplus.com/tokens,
+ *       served straight from KV (refreshed by the cron below)
  *   GET /api/stats, /api/timeseries, /api/breakdown, /api/graph,
  *       /api/meta, /api/devices, /api/submissions, /api/health
+ *
+ * Every accepted submission refreshes the precomposed /api/site payload
+ * in KV and, once per Asia/Shanghai day, exports all tables to R2
+ * (backup/YYYY-MM-DD.json) — no cron needed, submissions are the only
+ * write event and devices report every 30 minutes.
  *
  * Not implemented: the browser-based GitHub OAuth device flow
  * (POST /api/auth/device[/poll]); use `tokens login --token` instead.
@@ -41,6 +46,12 @@ import {
 
 export type { Env };
 
+/** Endpoints that only accept one non-GET method, for 405 responses. */
+const METHOD_FOR: Record<string, string> = {
+  "/api/submit": "POST",
+  "/api/settings/submitted-data": "DELETE",
+};
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -54,9 +65,11 @@ export default {
       });
     }
 
-    if (method === "POST" && pathname === "/api/submit") return handleSubmit(request, env);
+    if (method === "POST" && pathname === "/api/submit") {
+      return handleSubmit(request, env, ctx);
+    }
     if (method === "DELETE" && pathname === "/api/settings/submitted-data") {
-      return handleDeleteSubmittedData(request, env);
+      return handleDeleteSubmittedData(request, env, ctx);
     }
 
     if (method === "GET") {
@@ -85,6 +98,12 @@ export default {
         case "/api/health":
           return json({ service: "tokens-usage", ok: true });
       }
+    }
+
+    // Known path, wrong method: say which method it wants.
+    const expected = METHOD_FOR[pathname];
+    if (expected && method !== expected) {
+      return json({ error: `Method not allowed, use ${expected}` }, 405, { Allow: expected });
     }
 
     return json({ error: "Not found" }, 404);
