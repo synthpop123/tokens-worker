@@ -2,10 +2,12 @@
  * GET /api/site — the one-request view backing lkwplus.com/tokens.
  *
  * Everything the dashboard needs, precomposed: totals and per-dimension
- * breakdowns for the three ranges it offers (7 days / 30 days / all time,
+ * breakdowns for the four ranges it offers (7 / 30 / 90 days / all time,
  * range boundaries computed here so client and server always agree on
- * "today"), the full daily series split by provider for the stacked trend
- * chart and heatmap, and the device inventory. Model rows are merged under
+ * "today"), the full daily series split by provider (for the stacked trend
+ * chart, weekday profile and heatmap) with per-day active time where the
+ * CLI reported it, and the device inventory with CLI metadata (version,
+ * sessions, active-time totals, MCP servers). Model rows are merged under
  * canonical names (see models.ts) — the raw spellings stay visible on
  * /api/stats.
  *
@@ -23,6 +25,7 @@ const CACHE_SECONDS = 300;
 const RANGES = [
   { key: "week", days: 7 },
   { key: "month", days: 30 },
+  { key: "quarter", days: 90 },
   { key: "all", days: null },
 ] as const;
 
@@ -50,12 +53,36 @@ interface DailyProviderRow {
   messages: number;
 }
 
+interface DailyActivityRow {
+  date: string;
+  active: number | null;
+}
+
 interface DeviceRow {
   name: string | null;
+  firstSeen: number | null;
   lastSeen: number | null;
+  cliVersion: string | null;
+  sessions: number | null;
+  activeMs: number | null;
+  longestMs: number | null;
+  maxConcurrent: number | null;
+  mcpServers: string | null;
   activeDays: number;
   tokens: number | null;
+  messages: number | null;
   cost: number | null;
+}
+
+interface SiteDay {
+  date: string;
+  tokens: number;
+  cost: number;
+  messages: number;
+  /** Per-day active time (ms) summed across devices; present only where
+   *  the CLI reported it. */
+  active?: number;
+  providers: Record<string, { tokens: number; cost: number }>;
 }
 
 const isoDay = new Intl.DateTimeFormat("en-CA", {
@@ -111,8 +138,10 @@ export async function handleSite(request: Request, env: Env, ctx: ExecutionConte
   };
 
   // CORS headers are attached per-request after lookup, so the cached
-  // entry itself stays origin-neutral.
-  const cacheKey = new Request(new URL("/api/site", request.url).toString());
+  // entry itself stays origin-neutral. The version tag busts the edge
+  // cache whenever the payload shape changes — bump it alongside any
+  // schema change so a fresh deploy serves fresh JSON immediately.
+  const cacheKey = new Request(new URL("/api/site?v=2", request.url).toString());
   const cache = caches.default;
   const hit = await cache.match(cacheKey);
   if (hit) return withCors(hit);
@@ -150,14 +179,25 @@ export async function handleSite(request: Request, env: Env, ctx: ExecutionConte
        FROM daily_usage u GROUP BY u.date, u.provider ORDER BY u.date`
     ),
     env.DB.prepare(
-      `SELECT d.name, d.last_seen AS lastSeen,
+      `SELECT u.date, sum(u.active_time_ms) AS active
+       FROM daily_activity u GROUP BY u.date ORDER BY u.date`
+    ),
+    env.DB.prepare(
+      `SELECT d.name, d.first_seen AS firstSeen, d.last_seen AS lastSeen,
+              d.cli_version AS cliVersion, d.session_count AS sessions,
+              d.total_active_time_ms AS activeMs,
+              d.longest_continuous_ms AS longestMs,
+              d.max_concurrent_sessions AS maxConcurrent,
+              d.mcp_servers AS mcpServers,
               count(DISTINCT u.date) AS activeDays,
               sum(u.input + u.output + u.cache_read + u.cache_write + u.reasoning) AS tokens,
+              sum(u.messages) AS messages,
               sum(u.cost) AS cost
        FROM devices d LEFT JOIN daily_usage u ON u.device_id = d.id
        GROUP BY d.id ORDER BY d.last_seen DESC`
     ),
   ]);
+  const base = RANGES.length * 4;
 
   const ranges: Record<string, unknown> = {};
   RANGES.forEach(({ key, days }, i) => {
@@ -187,16 +227,17 @@ export async function handleSite(request: Request, env: Env, ctx: ExecutionConte
   });
 
   // Pivot (date, provider) rows into one entry per day with a provider map.
-  const daily = new Map<
-    string,
-    { date: string; tokens: number; cost: number; messages: number; providers: Record<string, { tokens: number; cost: number }> }
-  >();
-  for (const row of results[RANGES.length * 4].results as unknown as DailyProviderRow[]) {
-    let day = daily.get(row.date);
+  const daily = new Map<string, SiteDay>();
+  const dayFor = (date: string): SiteDay => {
+    let day = daily.get(date);
     if (!day) {
-      day = { date: row.date, tokens: 0, cost: 0, messages: 0, providers: {} };
-      daily.set(row.date, day);
+      day = { date, tokens: 0, cost: 0, messages: 0, providers: {} };
+      daily.set(date, day);
     }
+    return day;
+  };
+  for (const row of results[base].results as unknown as DailyProviderRow[]) {
+    const day = dayFor(row.date);
     day.tokens += row.tokens;
     day.cost += row.cost;
     day.messages += row.messages;
@@ -208,22 +249,33 @@ export async function handleSite(request: Request, env: Env, ctx: ExecutionConte
       day.providers[provider] = slot;
     }
   }
+  for (const row of results[base + 1].results as unknown as DailyActivityRow[]) {
+    if (!row.active || row.active <= 0) continue;
+    dayFor(row.date).active = row.active;
+  }
 
-  const devices = (results[RANGES.length * 4 + 1].results as unknown as DeviceRow[]).map(
-    (device) => ({
-      name: device.name?.trim() || "Unnamed device",
-      lastSeen: device.lastSeen,
-      activeDays: device.activeDays,
-      tokens: device.tokens ?? 0,
-      cost: device.cost ?? 0,
-    })
-  );
+  const devices = (results[base + 2].results as unknown as DeviceRow[]).map((device) => ({
+    name: device.name?.trim() || "Unnamed device",
+    firstSeen: device.firstSeen,
+    lastSeen: device.lastSeen,
+    cliVersion: device.cliVersion,
+    sessions: device.sessions,
+    activeMs: device.activeMs,
+    longestMs: device.longestMs,
+    maxConcurrent: device.maxConcurrent,
+    mcpServers:
+      typeof device.mcpServers === "string" ? (JSON.parse(device.mcpServers) as string[]) : null,
+    activeDays: device.activeDays,
+    tokens: device.tokens ?? 0,
+    messages: device.messages ?? 0,
+    cost: device.cost ?? 0,
+  }));
 
   const body = JSON.stringify({
     generatedAt: new Date().toISOString(),
     today,
     ranges,
-    daily: [...daily.values()],
+    daily: [...daily.values()].sort((a, b) => (a.date < b.date ? -1 : 1)),
     devices,
   });
   const headers = {
