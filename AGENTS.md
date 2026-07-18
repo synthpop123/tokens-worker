@@ -17,7 +17,11 @@ doesn't know about, and the next push silently overwrites it.
 ## Other facts that save a lookup
 
 - Verify locally with `npm run types && npx tsc --noEmit`. There is no test
-  suite.
+ suite.
+- `/` serves `public/index.html` (Workers Static Assets) — a self-contained
+ static homepage documenting the architecture and API, with live totals
+ from `/api/site` and a light/dark toggle. When endpoints or merge
+ semantics change, update it together with the README.
 - CORS allowlist for the public read API lives in `ALLOWED_ORIGINS` in
   `src/http.ts` (plus a localhost regex). Origins must be exact
   scheme+host matches.

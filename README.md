@@ -6,7 +6,11 @@ Each machine runs `tokens serve` with `TOKENS_API_URL=https://tokens.lkwplus.com
 
 Every accepted submission also (a) rewrites the precomposed `/api/site` payload in KV, (b) archives the raw payload to R2 (`raw/<deviceId>/latest.json` — submissions are full rescans, so the latest one reproduces the device's whole history), and (c) once per Asia/Shanghai day exports all four tables to R2 (`backup/YYYY-MM-DD.json`), a long-term backup beyond D1's 30-day Time Travel. Submissions are the only write event, so no cron is needed.
 
-The root URL serves a static homepage (`public/index.html`, via [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/)) documenting the architecture and the API, with live totals pulled from `/api/site`. Assets are matched before the Worker runs, so `/api/*` routing is untouched.
+## Homepage
+
+The root URL serves a static homepage (`public/index.html`, via [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/)) documenting the architecture and the API: the write/fan-out/read data flow, the merge semantics, and an endpoint reference with copy-to-clipboard paths. The header shows live totals and collector status pulled from `/api/site`, plus a light/dark toggle (explicit choice persists in `localStorage`, otherwise it follows the system). Assets are matched before the Worker runs, so `/api/*` routing is untouched.
+
+It is a single self-contained HTML file — no build step, no dependencies. The design tokens (gray scale, type scale, spacing) mirror lkwplus.com so the page reads as part of the site. Fonts are vendored copies of [Geist and Geist Mono](https://vercel.com/font) (SIL OFL 1.1). When endpoints or semantics change, update this page together with the README.
 
 ## Storage model
 
@@ -78,6 +82,14 @@ curl "https://tokens.lkwplus.com/api/breakdown?by=model&client=cursor&limit=10"
 # 2026 contribution graph for the heatmap
 curl "https://tokens.lkwplus.com/api/graph?year=2026"
 ```
+
+## Security & privacy
+
+What this repo intentionally contains, and what it never does:
+
+- **The only secret is `TOKENS_API_TOKEN`** (the write-path bearer token). It lives as a Worker secret in Cloudflare and in the gitignored `.dev.vars` locally — it has never been committed. The auth check hashes both sides and compares with the runtime's timing-safe primitive.
+- **`wrangler.jsonc` carries resource identifiers, not credentials** — the D1 `database_id` and KV namespace `id` only name the bindings; access requires a Cloudflare API token that is not in the repo.
+- **Reads are public by design.** The read API serves aggregate usage numbers for a personal dashboard. Internal device ids never leave the Worker — public rows identify devices by display name only — and raw payloads / backups stay in the private R2 bucket.
 
 ## Setup & deploy
 

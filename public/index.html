@@ -6,11 +6,16 @@
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fcfcfc">
 <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#111111">
-<title>Tokens API · tokens.lkwplus.com</title>
+<title>Tokens Worker · architecture &amp; API</title>
 <meta name="description" content="Self-hosted backend for the tokens CLI — architecture and API reference for the usage collector behind lkwplus.com/tokens.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='0.5' y='0.5' width='7' height='7' rx='1.75' fill='%239be9a8'/%3E%3Crect x='8.5' y='0.5' width='7' height='7' rx='1.75' fill='%2340c463'/%3E%3Crect x='0.5' y='8.5' width='7' height='7' rx='1.75' fill='%2330a14e'/%3E%3Crect x='8.5' y='8.5' width='7' height='7' rx='1.75' fill='%23216e39'/%3E%3C/svg%3E">
 <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/Geist-Variable.woff2">
 <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/GeistMono-Variable.woff2">
+<script>
+  /* Apply the saved theme before first paint to avoid a flash. */
+  const theme = localStorage.theme;
+  if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+</script>
 <style>
   /* Tokens lifted from the lkwplus.com design system (color.css, shape.css,
      typography.css, layout.css) so this page reads as part of the site. */
@@ -103,6 +108,11 @@
     0%, 100% { opacity: 1; }
     50% { opacity: 0.4; }
   }
+
+  /* Explicit theme choice overrides the system preference; every color on
+     the page goes through light-dark(), so flipping color-scheme is enough. */
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
 
   *, ::before, ::after {
     box-sizing: border-box;
@@ -199,6 +209,13 @@
 
   /* Masthead ---------------------------------------------------------- */
 
+  .mast-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-s);
+  }
+
   .mast h1 {
     display: flex;
     align-items: center;
@@ -207,6 +224,30 @@
     font-size: var(--step-3);
     font-weight: var(--w-medium);
     line-height: calc(var(--leading-offset) + 1em);
+  }
+
+  .theme-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    inline-size: 2rem;
+    block-size: 2rem;
+    border-radius: var(--radius-md);
+  }
+  .theme-btn:hover {
+    background-color: color-mix(in oklab, var(--muted) 50%, transparent);
+  }
+  .theme-btn svg {
+    inline-size: 1rem;
+    block-size: 1rem;
+  }
+  .ic-moon { display: none; }
+  :root[data-theme="dark"] .ic-sun { display: none; }
+  :root[data-theme="dark"] .ic-moon { display: block; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) .ic-sun { display: none; }
+    :root:not([data-theme]) .ic-moon { display: block; }
   }
 
   .dot {
@@ -542,11 +583,17 @@
 <a class="skip" href="#main">Skip to content</a>
 
 <header class="mast">
-  <h1>
-    <span class="dot" id="dot" data-state="wait" title="Checking collector status"></span>
-    tokens.lkwplus.com
-    <span class="sr" id="dot-label" role="status">Checking collector status</span>
-  </h1>
+  <div class="mast-top">
+    <h1>
+      <span class="dot" id="dot" data-state="wait" title="Checking collector status"></span>
+      Tokens Worker
+      <span class="sr" id="dot-label" role="status">Checking collector status</span>
+    </h1>
+    <button class="theme-btn" id="theme" type="button" aria-label="Toggle theme">
+      <svg class="ic-sun" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 7a5 5 0 1 0 0 10a5 5 0 0 0 0-10"/><path fill="currentColor" fill-rule="evenodd" d="M12 1a1 1 0 0 1 1 1v1a1 1 0 1 1-2 0V2a1 1 0 0 1 1-1M3.293 3.293a1 1 0 0 1 1.414 0l1.5 1.5a1 1 0 0 1-1.414 1.414l-1.5-1.5a1 1 0 0 1 0-1.414m17.414 0a1 1 0 0 1 0 1.414l-1.5 1.5a1 1 0 1 1-1.414-1.414l1.5-1.5a1 1 0 0 1 1.414 0M1 12a1 1 0 0 1 1-1h1a1 1 0 1 1 0 2H2a1 1 0 0 1-1-1m19 0a1 1 0 0 1 1-1h1a1 1 0 1 1 0 2h-1a1 1 0 0 1-1-1M6.207 17.793a1 1 0 0 1 0 1.414l-1.5 1.5a1 1 0 0 1-1.414-1.414l1.5-1.5a1 1 0 0 1 1.414 0m11.586 0a1 1 0 0 1 1.414 0l1.5 1.5a1 1 0 0 1-1.414 1.414l-1.5-1.5a1 1 0 0 1 0-1.414M12 20a1 1 0 0 1 1 1v1a1 1 0 1 1-2 0v-1a1 1 0 0 1 1-1" clip-rule="evenodd"/></svg>
+      <svg class="ic-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M20.958 15.325c.204-.486-.379-.9-.868-.684a7.7 7.7 0 0 1-3.101.648c-4.185 0-7.577-3.324-7.577-7.425a7.3 7.3 0 0 1 1.134-3.91c.284-.448-.057-1.068-.577-.936C5.96 4.041 3 7.613 3 11.862C3 16.909 7.175 21 12.326 21c3.9 0 7.24-2.345 8.632-5.675"/><path fill="currentColor" d="M15.611 3.103c-.53-.354-1.162.278-.809.808l.63.945a2.33 2.33 0 0 1 0 2.588l-.63.945c-.353.53.28 1.162.81.808l.944-.63a2.33 2.33 0 0 1 2.588 0l.945.63c.53.354 1.162-.278.808-.808l-.63-.945a2.33 2.33 0 0 1 0-2.588l.63-.945c.354-.53-.278-1.162-.809-.808l-.944.63a2.33 2.33 0 0 1-2.588 0z"/></svg>
+    </button>
+  </div>
   <p class="intro">
     Self-hosted backend for the <a href="https://github.com/missuo/tokens" rel="noopener">tokens</a> CLI,
     running on a single Cloudflare Worker. Every machine reports its AI-agent token usage here;
@@ -942,6 +989,17 @@ curl "https://tokens.lkwplus.com/api/graph?year=2026"</code></pre>
 <script>
   (() => {
     const CANONICAL = "https://tokens.lkwplus.com";
+
+    /* Theme toggle: explicit choice persists, otherwise follow the system. */
+    document.getElementById("theme").addEventListener("click", () => {
+      const root = document.documentElement;
+      const dark =
+        root.dataset.theme === "dark" ||
+        (!root.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+      const theme = dark ? "light" : "dark";
+      root.dataset.theme = theme;
+      localStorage.theme = theme;
+    });
 
     /* Click-to-copy on endpoint paths. */
     for (const btn of document.querySelectorAll(".path")) {
