@@ -4,13 +4,16 @@
  * Everything the dashboard needs, precomposed: totals and per-dimension
  * breakdowns for the four ranges it offers (7 / 30 / 90 days / all time,
  * range boundaries computed here so client and server always agree on
- * "today"), the full daily series split by provider (for the stacked trend
- * chart, weekday profile and heatmap) with per-day active time where the
- * CLI reported it, and the device inventory with CLI metadata (version,
- * sessions, active-time totals, MCP servers). Model rows are merged under
- * canonical names (see models.ts). "Active" days count messages too:
- * early-2025 Cursor logs carry message counts but no token usage, and
- * those days really were active.
+ * "today"), the full daily series split by provider AND by client (for the
+ * stacked trend chart's two stacking modes, the weekday profile and the
+ * heatmap) with per-day active time where the CLI reported it, and the
+ * device inventory with CLI metadata (version, sessions, active-time
+ * totals, MCP servers). Every breakdown row (model / client / provider)
+ * also carries its usage span — distinct active days plus first/last date
+ * inside the range. Model rows are merged under canonical names (see
+ * models.ts). "Active" days count messages too: early-2025 Cursor logs
+ * carry message counts but no token usage, and those days really were
+ * active.
  *
  * Serving path: the payload lives in KV, refreshed on every accepted
  * submission (the only event that changes the data — the account's cron
@@ -28,7 +31,9 @@ import { canonicalModel } from "./models";
 
 const CACHE_SECONDS = 300;
 const STALE_SECONDS = 3600;
-export const SITE_KEY = "site-v1";
+// Bump on shape changes so a fresh deploy recomposes instead of serving
+// the previous schema out of KV until the next submission.
+export const SITE_KEY = "site-v2";
 
 const RANGES = [
   { key: "week", days: 7 },
@@ -76,6 +81,11 @@ interface DeviceRow {
   cost: number | null;
 }
 
+interface DaySlice {
+  tokens: number;
+  cost: number;
+}
+
 interface SiteDay {
   date: string;
   tokens: number;
@@ -84,7 +94,8 @@ interface SiteDay {
   /** Per-day active time (ms) summed across devices; present only where
    *  the CLI reported it. */
   active?: number;
-  providers: Record<string, { tokens: number; cost: number }>;
+  providers: Record<string, DaySlice>;
+  clients: Record<string, DaySlice>;
 }
 
 /** Shift an ISO day by whole days; anchoring at noon UTC is DST-proof. */
@@ -118,12 +129,26 @@ function addMetrics(target: Metrics, row: Metrics): void {
   target.cost += row.cost;
 }
 
+/** Distinct active dates of one breakdown entry, serialized as a span. */
+interface DateSpan {
+  dates: Set<string>;
+}
+
+function spanOf({ dates }: DateSpan) {
+  const sorted = [...dates].sort();
+  return {
+    days: sorted.length,
+    firstDate: sorted[0] ?? null,
+    lastDate: sorted[sorted.length - 1] ?? null,
+  };
+}
+
 /** One range's aggregation state, filled row by row. */
 class RangeAgg {
   totals = emptyMetrics();
-  byModel = new Map<string, Metrics & { model: string; providers: Set<string> }>();
-  byClient = new Map<string, Metrics & { client: string }>();
-  byProvider = new Map<string, Metrics & { provider: string }>();
+  byModel = new Map<string, Metrics & DateSpan & { model: string; providers: Set<string> }>();
+  byClient = new Map<string, Metrics & DateSpan & { client: string }>();
+  byProvider = new Map<string, Metrics & DateSpan & { provider: string }>();
   days = new Map<string, { tokens: number; messages: number }>();
 
   constructor(readonly from: string | null) {}
@@ -133,25 +158,28 @@ class RangeAgg {
 
     let m = this.byModel.get(model);
     if (!m) {
-      m = { ...emptyMetrics(), model, providers: new Set() };
+      m = { ...emptyMetrics(), model, providers: new Set(), dates: new Set() };
       this.byModel.set(model, m);
     }
     addMetrics(m, row);
+    m.dates.add(row.date);
     if (row.provider) m.providers.add(row.provider);
 
     let c = this.byClient.get(row.client);
     if (!c) {
-      c = { ...emptyMetrics(), client: row.client };
+      c = { ...emptyMetrics(), client: row.client, dates: new Set() };
       this.byClient.set(row.client, c);
     }
     addMetrics(c, row);
+    c.dates.add(row.date);
 
     let p = this.byProvider.get(row.provider);
     if (!p) {
-      p = { ...emptyMetrics(), provider: row.provider };
+      p = { ...emptyMetrics(), provider: row.provider, dates: new Set() };
       this.byProvider.set(row.provider, p);
     }
     addMetrics(p, row);
+    p.dates.add(row.date);
 
     let day = this.days.get(row.date);
     if (!day) {
@@ -177,11 +205,17 @@ class RangeAgg {
         firstDate: dates[0] ?? null,
         lastDate: dates[dates.length - 1] ?? null,
       },
-      byModel: [...this.byModel.values()]
+      byModel: [...this.byModel.values()].sort(byTokensDesc).map(({ providers, dates, ...rest }) => ({
+        ...rest,
+        providers: [...providers].join(","),
+        ...spanOf({ dates }),
+      })),
+      byClient: [...this.byClient.values()]
         .sort(byTokensDesc)
-        .map(({ providers, ...rest }) => ({ ...rest, providers: [...providers].join(",") })),
-      byClient: [...this.byClient.values()].sort(byTokensDesc),
-      byProvider: [...this.byProvider.values()].sort(byTokensDesc),
+        .map(({ dates, ...rest }) => ({ ...rest, ...spanOf({ dates }) })),
+      byProvider: [...this.byProvider.values()]
+        .sort(byTokensDesc)
+        .map(({ dates, ...rest }) => ({ ...rest, ...spanOf({ dates }) })),
     };
   }
 }
@@ -229,10 +263,16 @@ export async function composeSiteBody(env: Env): Promise<string> {
   const dayFor = (date: string): SiteDay => {
     let day = daily.get(date);
     if (!day) {
-      day = { date, tokens: 0, cost: 0, messages: 0, providers: {} };
+      day = { date, tokens: 0, cost: 0, messages: 0, providers: {}, clients: {} };
       daily.set(date, day);
     }
     return day;
+  };
+  const addSlice = (slices: Record<string, DaySlice>, key: string, row: UsageRow) => {
+    const slot = slices[key] ?? { tokens: 0, cost: 0 };
+    slot.tokens += row.tokens;
+    slot.cost += row.cost;
+    slices[key] = slot;
   };
 
   for (const row of usage.results as unknown as UsageRow[]) {
@@ -245,11 +285,8 @@ export async function composeSiteBody(env: Env): Promise<string> {
     day.cost += row.cost;
     day.messages += row.messages;
     if (row.tokens > 0 || row.cost > 0) {
-      const provider = row.provider || "unknown";
-      const slot = day.providers[provider] ?? { tokens: 0, cost: 0 };
-      slot.tokens += row.tokens;
-      slot.cost += row.cost;
-      day.providers[provider] = slot;
+      addSlice(day.providers, row.provider || "unknown", row);
+      addSlice(day.clients, row.client || "unknown", row);
     }
   }
 
