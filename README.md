@@ -1,6 +1,11 @@
 # tokens-worker
 
-Self-hosted backend for the [`tokens`](https://github.com/missuo/tokens) CLI, running on Cloudflare Workers + D1 (+ KV for the precomposed site payload, R2 for backups) and served at `https://tokens.lkwplus.com`.
+Self-hosted backend for the [`tokens`](https://github.com/missuo/tokens) CLI, running on Cloudflare Workers + D1 (+ KV for the precomposed site payload, R2 for backups) and served at [tokens.lkwplus.com](https://tokens.lkwplus.com).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/homepage-dark.png">
+  <img src="docs/homepage-light.png" alt="Tokens Worker homepage — live totals, collector status and the write/fan-out/read architecture" width="100%">
+</picture>
 
 Each machine runs `tokens serve` with `TOKENS_API_URL=https://tokens.lkwplus.com`; the CLI POSTs a full rescan of its local session logs every 30 minutes. This Worker implements the official server's submission contract and merge semantics, stores the full usage matrix in D1, and exposes a filterable read API for the personal site.
 
@@ -142,6 +147,7 @@ src/site.ts              /api/site — precomposed dashboard view (edge cache
 src/backup.ts            Daily full-table export to R2
 public/                  Static homepage (architecture + API reference),
                          served at / by Workers Static Assets
+docs/                    README screenshots (not deployed)
 migrations/              D1 schema (0003 is the current clean rebuild)
 wrangler.jsonc           Worker config (custom domain, D1/KV/R2 bindings,
                          static assets)
