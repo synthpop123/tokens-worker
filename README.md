@@ -6,6 +6,8 @@ Each machine runs `tokens serve` with `TOKENS_API_URL=https://tokens.lkwplus.com
 
 Every accepted submission also (a) rewrites the precomposed `/api/site` payload in KV, (b) archives the raw payload to R2 (`raw/<deviceId>/latest.json` — submissions are full rescans, so the latest one reproduces the device's whole history), and (c) once per Asia/Shanghai day exports all four tables to R2 (`backup/YYYY-MM-DD.json`), a long-term backup beyond D1's 30-day Time Travel. Submissions are the only write event, so no cron is needed.
 
+The root URL serves a static homepage (`public/index.html`, via [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/)) documenting the architecture and the API, with live totals pulled from `/api/site`. Assets are matched before the Worker runs, so `/api/*` routing is untouched.
+
 ## Storage model
 
 Usage is stored at maximum granularity — one row per **(device, date, client, model, provider)** with the full token breakdown (`input`, `output`, `cache_read`, `cache_write`, `reasoning`), `messages`, `cost`, and the parser revision that produced it. Everything the read API serves is an aggregation of this matrix, so any view the CLI can produce locally (per client / model / provider / device / arbitrary date window) can be reproduced remotely.
@@ -62,7 +64,7 @@ Every aggregate row carries the full metric set: `input`, `output`, `cacheRead`,
 | `GET /api/meta` | Distinct `clients`, `models` (raw + `canonical`, with provider), `providers`, device names, data `range`, `lastUpdatedAt` — for building filter UIs |
 | `GET /api/devices` | Device inventory: name, first/last seen, CLI version, time metrics, MCP servers, per-device totals |
 | `GET /api/submissions?limit=50` | Submission audit log (`mode`, `rowCount`, `changedDays`, `warningCount`, CLI version) for checking report cadence |
-| `GET /api/health` (also `/`) | Liveness check |
+| `GET /api/health` | Liveness check (`/` serves the static homepage) |
 
 Examples:
 
@@ -126,6 +128,9 @@ src/models.ts            Canonical model names shared by all aggregate
 src/site.ts              /api/site — precomposed dashboard view (edge cache
                          over KV over a single D1 batch)
 src/backup.ts            Daily full-table export to R2
+public/                  Static homepage (architecture + API reference),
+                         served at / by Workers Static Assets
 migrations/              D1 schema (0003 is the current clean rebuild)
-wrangler.jsonc           Worker config (custom domain, D1/KV/R2 bindings)
+wrangler.jsonc           Worker config (custom domain, D1/KV/R2 bindings,
+                         static assets)
 ```

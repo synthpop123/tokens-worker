@@ -26,6 +26,10 @@
  * (backup/YYYY-MM-DD.json) — no cron needed, submissions are the only
  * write event and devices report every 30 minutes.
  *
+ * The homepage (architecture + API reference) is a static asset:
+ * public/index.html, served by Workers Static Assets before this router
+ * runs — "/" never reaches the Worker.
+ *
  * Not implemented: the browser-based GitHub OAuth device flow
  * (POST /api/auth/device[/poll]); use `tokens login --token` instead.
  */

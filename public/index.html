@@ -1,0 +1,1041 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#fcfcfc">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#111111">
+<title>Tokens API · tokens.lkwplus.com</title>
+<meta name="description" content="Self-hosted backend for the tokens CLI — architecture and API reference for the usage collector behind lkwplus.com/tokens.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='0.5' y='0.5' width='7' height='7' rx='1.75' fill='%239be9a8'/%3E%3Crect x='8.5' y='0.5' width='7' height='7' rx='1.75' fill='%2340c463'/%3E%3Crect x='0.5' y='8.5' width='7' height='7' rx='1.75' fill='%2330a14e'/%3E%3Crect x='8.5' y='8.5' width='7' height='7' rx='1.75' fill='%23216e39'/%3E%3C/svg%3E">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/Geist-Variable.woff2">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/GeistMono-Variable.woff2">
+<style>
+  /* Tokens lifted from the lkwplus.com design system (color.css, shape.css,
+     typography.css, layout.css) so this page reads as part of the site. */
+  @font-face {
+    font-family: "Geist";
+    src: url("/fonts/Geist-Variable.woff2") format("woff2");
+    font-weight: 100 900;
+    font-display: swap;
+  }
+  @font-face {
+    font-family: "Geist Mono";
+    src: url("/fonts/GeistMono-Variable.woff2") format("woff2");
+    font-weight: 100 900;
+    font-display: swap;
+  }
+  @font-face {
+    font-family: "Geist Fallback";
+    src: local("Arial");
+    font-weight: 100 900;
+    size-adjust: 104.7553%;
+    ascent-override: 95.9379%;
+    descent-override: 28.1609%;
+    line-gap-override: 0%;
+  }
+  @font-face {
+    font-family: "Geist Mono Fallback";
+    src: local("Courier New");
+    font-weight: 100 900;
+    size-adjust: 99.9837%;
+    ascent-override: 100.5164%;
+    descent-override: 29.5048%;
+    line-gap-override: 0%;
+  }
+
+  :root {
+    --gray-1:  light-dark(#fcfcfc, #111111);
+    --gray-2:  light-dark(#f9f9f9, #191919);
+    --gray-3:  light-dark(#f0f0f0, #222222);
+    --gray-4:  light-dark(#e8e8e8, #2a2a2a);
+    --gray-5:  light-dark(#e0e0e0, #313131);
+    --gray-6:  light-dark(#d9d9d9, #3a3a3a);
+    --gray-7:  light-dark(#cecece, #484848);
+    --gray-9:  light-dark(#8d8d8d, #6e6e6e);
+    --gray-11: light-dark(#646464, #b4b4b4);
+    --gray-12: light-dark(#202020, #eeeeee);
+
+    --background:       var(--gray-1);
+    --foreground:       var(--gray-12);
+    --muted:            var(--gray-3);
+    --muted-foreground: var(--gray-11);
+    --border:           var(--gray-6);
+    --ring:             light-dark(#bbbbbb, #606060);
+
+    --accent:      light-dark(#30a14e, #26a641);
+    --destructive: light-dark(#ce2c31, #ff9592);
+
+    --font-sans: "Geist", "Geist Fallback", sans-serif;
+    --font-mono: "Geist Mono", "Geist Mono Fallback", monospace;
+
+    --step--1: clamp(0.8333rem, 0.9094rem + -0.1002vw, 0.8889rem);
+    --step-0: 1rem;
+    --step-1: clamp(1.125rem, 1.0973rem + 0.1353vw, 1.2rem);
+    --step-2: clamp(1.2656rem, 1.2011rem + 0.3145vw, 1.44rem);
+    --step-3: clamp(1.4238rem, 1.3113rem + 0.5487vw, 1.728rem);
+
+    --space-3xs: clamp(0.25rem, 0.2269rem + 0.1127vw, 0.3125rem);
+    --space-2xs: clamp(0.5rem, 0.4769rem + 0.1127vw, 0.5625rem);
+    --space-xs: clamp(0.75rem, 0.7038rem + 0.2255vw, 0.875rem);
+    --space-s: clamp(1rem, 0.9538rem + 0.2255vw, 1.125rem);
+    --space-m: clamp(1.5rem, 1.4307rem + 0.3382vw, 1.6875rem);
+    --space-l: clamp(2rem, 1.9076rem + 0.451vw, 2.25rem);
+    --space-xl: clamp(3rem, 2.8613rem + 0.6764vw, 3.375rem);
+
+    --radius-xs: 0.125rem;
+    --radius-sm: 0.25rem;
+    --radius-md: 0.375rem;
+    --radius-full: 9999px;
+
+    --w-medium: 450;
+    --leading-offset: 0.65rem;
+    --measure: 42rem;
+    --prose: color-mix(in oklab, var(--foreground) 80%, transparent);
+
+    --sk-pulse: sk-pulse 1.6s ease-in-out infinite;
+
+    color-scheme: light dark;
+  }
+
+  @keyframes sk-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  *, ::before, ::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 0 solid var(--border);
+    letter-spacing: -0.015em;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 0.25rem;
+    border-radius: var(--radius-sm);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, ::before, ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    max-inline-size: calc(var(--measure) + 2 * var(--space-s));
+    margin-inline: auto;
+    padding: var(--space-xl) var(--space-s) var(--space-m);
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: var(--step-0);
+    line-height: calc(var(--leading-offset) + 1em);
+    text-wrap: pretty;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3 {
+    font-size: inherit;
+    font-weight: inherit;
+    text-wrap: balance;
+  }
+
+  ol, ul { list-style: none; }
+
+  a {
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-color: transparent;
+    text-decoration-thickness: max(1px, 0.0625em);
+    text-decoration-skip-ink: none;
+    text-underline-position: under;
+    text-underline-offset: -0.06em;
+  }
+  a:hover { text-decoration-color: currentColor; }
+
+  p a, dd a, li a, caption a {
+    text-decoration-color: var(--muted-foreground);
+  }
+
+  button {
+    font: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    background: none;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    padding: 0.1em 0.3em;
+    border-radius: var(--radius-sm);
+    background-color: color-mix(in oklab, var(--muted) 60%, transparent);
+  }
+
+  .skip {
+    position: absolute;
+    inset-block-start: var(--space-2xs);
+    inset-inline-start: var(--space-2xs);
+    padding: var(--space-3xs) var(--space-2xs);
+    background-color: var(--background);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: var(--step--1);
+    translate: 0 calc(-100% - var(--space-s));
+  }
+  .skip:focus-visible { translate: 0 0; }
+
+  /* Masthead ---------------------------------------------------------- */
+
+  .mast h1 {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    font-family: var(--font-mono);
+    font-size: var(--step-3);
+    font-weight: var(--w-medium);
+    line-height: calc(var(--leading-offset) + 1em);
+  }
+
+  .dot {
+    flex-shrink: 0;
+    inline-size: 0.5em;
+    block-size: 0.5em;
+    border-radius: var(--radius-full);
+    background-color: var(--gray-7);
+  }
+  .dot[data-state="wait"] { animation: var(--sk-pulse); }
+  .dot[data-state="on"] {
+    background-color: var(--accent);
+    box-shadow: 0 0 0 0.1875em color-mix(in oklab, var(--accent) 25%, transparent);
+  }
+  .dot[data-state="down"] {
+    background-color: var(--destructive);
+    box-shadow: 0 0 0 0.1875em color-mix(in oklab, var(--destructive) 25%, transparent);
+  }
+
+  .sr {
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .intro {
+    margin-block: var(--space-s) 0;
+    color: var(--muted-foreground);
+  }
+  .intro a { color: var(--foreground); }
+
+  /* Live strip --------------------------------------------------------- */
+
+  .strip {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--space-s);
+    margin-block-start: var(--space-m);
+  }
+  @media (width < 40rem) {
+    .strip { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  .strip > div {
+    display: grid;
+    gap: var(--space-3xs);
+    align-content: start;
+  }
+  .strip dt {
+    font-size: var(--step--1);
+    color: var(--muted-foreground);
+  }
+  .strip .v {
+    font-size: var(--step-2);
+    font-weight: var(--w-medium);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+  }
+  .strip .s {
+    font-size: var(--step--1);
+    color: var(--muted-foreground);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .sk {
+    display: block;
+    inline-size: 4.5em;
+    block-size: 1.1em;
+    border-radius: var(--radius-sm);
+    background-color: var(--gray-5);
+    animation: var(--sk-pulse);
+  }
+  .sk-s { inline-size: 7em; block-size: 0.8em; max-inline-size: 100%; }
+
+  /* Jump nav ------------------------------------------------------------ */
+
+  .jump {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3xs) var(--space-2xs);
+    margin-block-start: var(--space-m);
+    padding-block: var(--space-2xs);
+    border-block: 1px solid var(--border);
+    font-size: var(--step--1);
+    color: var(--muted-foreground);
+  }
+  .jump a:hover { color: var(--foreground); }
+  .jump span[aria-hidden] { color: var(--gray-7); }
+
+  /* Sections ------------------------------------------------------------ */
+
+  section { margin-block-start: var(--space-l); }
+
+  h2 {
+    margin-block-end: var(--space-s);
+    font-size: var(--step-1);
+    font-weight: var(--w-medium);
+    scroll-margin-block-start: var(--space-s);
+  }
+
+  .label {
+    margin-block: var(--space-m) var(--space-2xs);
+    font-size: var(--step--1);
+    font-weight: var(--w-medium);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+  }
+
+  section > p { color: var(--prose); }
+  section > p + p { margin-block-start: var(--space-2xs); }
+
+  /* Architecture lanes --------------------------------------------------- */
+
+  .lane { margin-block-start: var(--space-s); }
+  .lane .label { margin-block: 0 var(--space-2xs); }
+
+  .flow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3xs) var(--space-2xs);
+  }
+  .node {
+    display: inline-flex;
+    padding: 0.125rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    white-space: nowrap;
+  }
+  .node[data-store] {
+    border-color: transparent;
+    background-color: var(--muted);
+  }
+  .arr {
+    color: var(--muted-foreground);
+    font-size: var(--step--1);
+  }
+
+  .cap {
+    margin-block-start: var(--space-2xs);
+    font-size: var(--step--1);
+    color: var(--muted-foreground);
+  }
+
+  /* Tables --------------------------------------------------------------- */
+
+  table {
+    display: block;
+    inline-size: 100%;
+    margin-block-start: var(--space-2xs);
+    border-collapse: collapse;
+    font-size: var(--step--1);
+    text-align: start;
+    overflow-x: auto;
+  }
+  thead { border-block-end: 1.5px solid color-mix(in oklab, var(--muted-foreground) 30%, transparent); }
+  tbody tr + tr { border-block-start: 1px solid var(--border); }
+  th, td {
+    padding: 0.5em 1em 0.5em 0;
+    text-align: start;
+    vertical-align: top;
+  }
+  th { font-weight: var(--w-medium); }
+  td { color: var(--prose); }
+  td:first-child { white-space: nowrap; }
+
+  /* Definition lists ------------------------------------------------------ */
+
+  .defs > div {
+    display: grid;
+    grid-template-columns: 13rem minmax(0, 1fr);
+    gap: var(--space-3xs) var(--space-s);
+    padding-block: var(--space-2xs);
+  }
+  .defs > div + div { border-block-start: 1px solid var(--border); }
+  @media (width < 40rem) {
+    .defs > div { grid-template-columns: 1fr; }
+  }
+  .defs dt { font-weight: var(--w-medium); }
+  .defs dd {
+    color: var(--prose);
+    font-size: var(--step--1);
+  }
+
+  /* Endpoint rows ---------------------------------------------------------- */
+
+  .eps {
+    display: flex;
+    flex-direction: column;
+  }
+  .ep {
+    display: grid;
+    grid-template-columns: 3.4rem minmax(0, 1fr) auto;
+    align-items: baseline;
+    column-gap: var(--space-2xs);
+    row-gap: var(--space-3xs);
+    padding-block: var(--space-xs);
+  }
+  .ep + .ep { border-block-start: 1px solid var(--border); }
+
+  .method {
+    justify-self: start;
+    align-self: center;
+    padding: 0.0625rem 0;
+    inline-size: 100%;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: var(--w-medium);
+    text-align: center;
+    color: var(--muted-foreground);
+    background-color: color-mix(in oklab, var(--muted-foreground) 12%, transparent);
+  }
+  .method[data-m="GET"] {
+    color: var(--accent);
+    background-color: color-mix(in oklab, var(--accent) 12%, transparent);
+  }
+  .method[data-m="DELETE"] {
+    color: var(--destructive);
+    background-color: color-mix(in oklab, var(--destructive) 12%, transparent);
+  }
+
+  .path {
+    justify-self: start;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4em;
+    min-inline-size: 0;
+    max-inline-size: 100%;
+    font-family: var(--font-mono);
+    font-size: 0.9375rem;
+    overflow-wrap: anywhere;
+    text-align: start;
+  }
+  .path svg {
+    flex-shrink: 0;
+    inline-size: 0.875em;
+    block-size: 0.875em;
+    color: var(--muted-foreground);
+    opacity: 0.55;
+  }
+  .path:hover svg { opacity: 1; }
+  .path .ic-check { display: none; color: var(--accent); }
+  .path[data-copied] .ic-copy { display: none; }
+  .path[data-copied] .ic-check { display: block; opacity: 1; }
+
+  .ep-aside {
+    align-self: center;
+    font-size: var(--step--1);
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+  }
+  a.ep-aside {
+    font-family: var(--font-sans);
+  }
+  a.ep-aside:hover { color: var(--foreground); }
+
+  .ep-body {
+    grid-column: 2 / -1;
+    display: grid;
+    gap: var(--space-3xs);
+    font-size: var(--step--1);
+    color: var(--prose);
+  }
+  @media (width < 40rem) {
+    .ep-body { grid-column: 1 / -1; }
+  }
+  .ep-body .prm { color: var(--muted-foreground); }
+  .ep-body .prm code { white-space: nowrap; }
+
+  /* Code block -------------------------------------------------------------- */
+
+  pre {
+    margin-block-start: var(--space-2xs);
+    padding: var(--space-xs) var(--space-s);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background-color: var(--gray-2);
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: var(--step--1);
+    line-height: 1.7;
+  }
+  pre code {
+    padding: 0;
+    border-radius: 0;
+    background: none;
+    font-size: inherit;
+  }
+  pre .c { color: var(--muted-foreground); }
+
+  /* Bullets ------------------------------------------------------------------ */
+
+  .notes { color: var(--prose); }
+  .notes li {
+    position: relative;
+    padding-inline-start: var(--space-s);
+  }
+  .notes li + li { margin-block-start: var(--space-3xs); }
+  .notes li::before {
+    content: "";
+    position: absolute;
+    inset-inline-start: 0.125rem;
+    inset-block-start: 0.6em;
+    inline-size: 0.375rem;
+    block-size: 0.375rem;
+    border-radius: var(--radius-xs);
+    background-color: var(--gray-7);
+  }
+
+  /* Footer --------------------------------------------------------------------- */
+
+  footer {
+    margin-block-start: var(--space-xl);
+    padding-block-start: var(--space-s);
+    border-block-start: 1px solid var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3xs) var(--space-s);
+    justify-content: space-between;
+    font-size: var(--step--1);
+    color: var(--muted-foreground);
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="mast">
+  <h1>
+    <span class="dot" id="dot" data-state="wait" title="Checking collector status"></span>
+    tokens.lkwplus.com
+    <span class="sr" id="dot-label" role="status">Checking collector status</span>
+  </h1>
+  <p class="intro">
+    Self-hosted backend for the <a href="https://github.com/missuo/tokens" rel="noopener">tokens</a> CLI,
+    running on a single Cloudflare Worker. Every machine reports its AI-agent token usage here;
+    D1 keeps the full matrix and a public read API feeds
+    <a href="https://lkwplus.com/tokens" rel="noopener">lkwplus.com/tokens</a>.
+  </p>
+
+  <dl class="strip" id="strip">
+    <div>
+      <dt>Tokens</dt>
+      <dd class="v" data-k="tokens"><span class="sk" aria-hidden="true"></span></dd>
+      <dd class="s" data-s="tokens"><span class="sk sk-s" aria-hidden="true"></span></dd>
+    </div>
+    <div>
+      <dt>Cost</dt>
+      <dd class="v" data-k="cost"><span class="sk" aria-hidden="true"></span></dd>
+      <dd class="s" data-s="cost"><span class="sk sk-s" aria-hidden="true"></span></dd>
+    </div>
+    <div>
+      <dt>Active days</dt>
+      <dd class="v" data-k="days"><span class="sk" aria-hidden="true"></span></dd>
+      <dd class="s" data-s="days"><span class="sk sk-s" aria-hidden="true"></span></dd>
+    </div>
+    <div>
+      <dt>Last report</dt>
+      <dd class="v" data-k="report"><span class="sk" aria-hidden="true"></span></dd>
+      <dd class="s" data-s="report"><span class="sk sk-s" aria-hidden="true"></span></dd>
+    </div>
+  </dl>
+
+  <nav class="jump" aria-label="Sections">
+    <a href="#architecture">Architecture</a><span aria-hidden="true">·</span>
+    <a href="#storage">Storage</a><span aria-hidden="true">·</span>
+    <a href="#write-path">Write path</a><span aria-hidden="true">·</span>
+    <a href="#read-api">Read API</a><span aria-hidden="true">·</span>
+    <a href="#cli-api">CLI endpoints</a><span aria-hidden="true">·</span>
+    <a href="#operations">Operations</a>
+  </nav>
+</header>
+
+<main id="main">
+  <section id="architecture">
+    <h2>Architecture</h2>
+    <p>
+      One Worker, three bindings. Submissions are the only write event, so they drive everything
+      downstream — there is no cron. Reads never queue behind writes: the dashboard payload is
+      precomposed into KV, and the rest of the read API aggregates D1 per request behind a
+      5-minute edge cache.
+    </p>
+
+    <div class="lane">
+      <h3 class="label">Write · every 30 minutes</h3>
+      <p class="flow">
+        <span class="node">tokens CLI</span><span class="arr" aria-hidden="true">→</span>
+        <span class="node">POST /api/submit</span><span class="arr" aria-hidden="true">→</span>
+        <span class="node">merge engine</span><span class="arr" aria-hidden="true">→</span>
+        <span class="node" data-store>D1 · usage matrix</span>
+      </p>
+      <p class="cap">
+        Each machine runs <code>tokens serve</code> and POSTs a full rescan of its local session
+        logs. The payload is validated with the official server’s consistency checks, then merged
+        day by day (semantics below).
+      </p>
+    </div>
+
+    <div class="lane">
+      <h3 class="label">Fan-out · on every accepted submission</h3>
+      <p class="flow">
+        <span class="node">accepted submission</span><span class="arr" aria-hidden="true">→</span>
+        <span class="node" data-store>KV · /api/site payload</span><span class="arr" aria-hidden="true">+</span>
+        <span class="node" data-store>R2 · raw payload</span><span class="arr" aria-hidden="true">+</span>
+        <span class="node" data-store>R2 · daily export</span>
+      </p>
+      <p class="cap">
+        The precomposed dashboard view is rewritten in KV so reads never wait on D1. The raw
+        payload lands at <code>raw/&lt;device&gt;/latest.json</code> — submissions are full rescans, so
+        the latest one reproduces a device’s whole history. Once per Asia/Shanghai day, all four
+        tables are exported to <code>backup/YYYY-MM-DD.json</code>.
+      </p>
+    </div>
+
+    <div class="lane">
+      <h3 class="label">Read · public</h3>
+      <p class="flow">
+        <span class="node">GET /api/*</span><span class="arr" aria-hidden="true">→</span>
+        <span class="node">edge cache · 5 min</span><span class="arr" aria-hidden="true">→</span>
+        <span class="node" data-store>KV / D1</span><span class="arr" aria-hidden="true">→</span>
+        <span class="node">lkwplus.com/tokens</span>
+      </p>
+      <p class="cap">
+        No auth on reads — it is usage data on a single-user backend. Browsers are limited by a
+        CORS allowlist; internal device ids are never exposed, rows identify devices by display
+        name only.
+      </p>
+    </div>
+  </section>
+
+  <section id="storage">
+    <h2>Storage</h2>
+    <p>
+      Usage is stored at maximum granularity: one row per
+      <code>(device, date, client, model, provider)</code> carrying
+      <code>input</code>, <code>output</code>, <code>cacheRead</code>, <code>cacheWrite</code>,
+      <code>reasoning</code>, <code>messages</code>, <code>cost</code> and the parser revision that
+      produced it. Everything the read API serves is an aggregation of this matrix. Sidecar
+      tables: <code>daily_activity</code> (per-day active time), <code>devices</code> (name, CLI
+      version, time metrics, MCP servers) and <code>submissions</code> (audit log). All dates are
+      calendar days in Asia/Shanghai.
+    </p>
+    <table>
+      <thead>
+        <tr><th scope="col">Binding</th><th scope="col">Service</th><th scope="col">Holds</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>DB</code></td>
+          <td>D1 · <code>tokens-usage</code></td>
+          <td>The usage matrix and its sidecar tables.</td>
+        </tr>
+        <tr>
+          <td><code>SITE_CACHE</code></td>
+          <td>Workers KV</td>
+          <td>Precomposed <code>/api/site</code> payload, rewritten on every accepted submission.</td>
+        </tr>
+        <tr>
+          <td><code>ARCHIVE</code></td>
+          <td>R2 · <code>tokens-archive</code></td>
+          <td>Raw payload per device plus the daily full-table export.</td>
+        </tr>
+        <tr>
+          <td><code>TOKENS_API_TOKEN</code></td>
+          <td>Worker secret</td>
+          <td>Bearer token for the write path; compared timing-safe.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="write-path">
+    <h2>Write path</h2>
+    <p>
+      The merge engine ports the official server’s semantics, so a self-hosted history behaves
+      exactly like a hosted one:
+    </p>
+    <dl class="defs">
+      <div>
+        <dt>Per-day, per-client replace</dt>
+        <dd>A submission replaces each (device, day, client) bucket it mentions; clients or days it does not mention are left untouched.</dd>
+      </div>
+      <div>
+        <dt>Regression guard</dt>
+        <dd>Within the same parser revision, a resubmit that would shrink a client’s day is ignored with a warning — local log cleanup can never erase stored history.</dd>
+      </div>
+      <div>
+        <dt>Parser revision floors</dt>
+        <dd>A client reporting with a schema version older than any revision already stored for it is rejected wholesale (stale-parser protection).</dd>
+      </div>
+      <div>
+        <dt>Authoritative coverage</dt>
+        <dd><code>tokens submit --replace</code> sends full-coverage windows that replace a client authoritatively — including tombstoning days the new scan no longer contains.</dd>
+      </div>
+      <div>
+        <dt>Validation</dt>
+        <dd>The official mathematical-consistency checks run on every submission (day totals vs client sums, future dates, duplicates…). Failures return <code>400</code> with details.</dd>
+      </div>
+      <div>
+        <dt>Chunked writes</dt>
+        <dd>A day’s DELETE+INSERTs always share one D1 batch; if a multi-batch first upload fails mid-flight, prior days stay consistent and the next idempotent resubmit heals the rest.</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section id="read-api">
+    <h2>Read API</h2>
+    <p>
+      Public, no auth, cached for 5 minutes. Every endpoint accepts the same filters, freely
+      combinable: <code>from</code>/<code>to</code> (inclusive <code>YYYY-MM-DD</code> bounds) and
+      <code>client</code>, <code>model</code>, <code>provider</code>, <code>device</code>
+      (comma-separated exact matches; <code>device</code> takes display names). Every aggregate
+      row carries the full metric set — the five token categories, their sum, messages and cost.
+      Aggregates merge per-effort model spellings under canonical names
+      (<code>claude-fable-5-thinking-max</code> → <code>claude-fable-5</code>);
+      <code>/api/graph</code> keeps raw ids as the full-fidelity export.
+    </p>
+
+    <ol class="eps">
+      <li class="ep">
+        <span class="method" data-m="GET">GET</span>
+        <button class="path" type="button" data-copy="/api/site" aria-label="Copy https://tokens.lkwplus.com/api/site">/api/site
+          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
+          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+        </button>
+        <a class="ep-aside" href="/api/site" target="_blank" rel="noopener" aria-label="Open /api/site in a new tab">open ↗</a>
+        <div class="ep-body">
+          <p>
+            The one-request dashboard view: totals and breakdowns for four ranges (7/30/90 days,
+            all time), the daily series split by provider and by client, and the device inventory.
+            No filters — served from edge cache over KV, never waits on D1.
+          </p>
+        </div>
+      </li>
+      <li class="ep">
+        <span class="method" data-m="GET">GET</span>
+        <button class="path" type="button" data-copy="/api/stats" aria-label="Copy https://tokens.lkwplus.com/api/stats">/api/stats
+          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
+          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+        </button>
+        <a class="ep-aside" href="/api/stats" target="_blank" rel="noopener" aria-label="Open /api/stats in a new tab">open ↗</a>
+        <div class="ep-body">
+          <p>Overview: totals (with active days and date range), daily series, and byClient / byModel / byProvider / byDevice rollups.</p>
+        </div>
+      </li>
+      <li class="ep">
+        <span class="method" data-m="GET">GET</span>
+        <button class="path" type="button" data-copy="/api/timeseries" aria-label="Copy https://tokens.lkwplus.com/api/timeseries">/api/timeseries
+          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
+          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+        </button>
+        <a class="ep-aside" href="/api/timeseries" target="_blank" rel="noopener" aria-label="Open /api/timeseries in a new tab">open ↗</a>
+        <div class="ep-body">
+          <p>Bucketed series, optionally split by one dimension — <code>interval=day&amp;group=client</code> powers stacked area charts.</p>
+          <p class="prm"><code>interval=day|week|month|year</code> <code>group=none|client|model|provider|device</code></p>
+        </div>
+      </li>
+      <li class="ep">
+        <span class="method" data-m="GET">GET</span>
+        <button class="path" type="button" data-copy="/api/breakdown" aria-label="Copy https://tokens.lkwplus.com/api/breakdown">/api/breakdown
+          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
+          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+        </button>
+        <a class="ep-aside" href="/api/breakdown" target="_blank" rel="noopener" aria-label="Open /api/breakdown in a new tab">open ↗</a>
+        <div class="ep-body">
+          <p>Arbitrary multi-dimension rollup, mirroring the CLI’s <code>--group-by</code>.</p>
+          <p class="prm"><code>by=client,model,provider,device,date,month,year</code> <code>limit=</code></p>
+        </div>
+      </li>
+      <li class="ep">
+        <span class="method" data-m="GET">GET</span>
+        <button class="path" type="button" data-copy="/api/graph" aria-label="Copy https://tokens.lkwplus.com/api/graph">/api/graph
+          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
+          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+        </button>
+        <a class="ep-aside" href="/api/graph" target="_blank" rel="noopener" aria-label="Open /api/graph in a new tab">open ↗</a>
+        <div class="ep-body">
+          <p>The same <code>TokenContributionData</code> shape as a <code>tokens graph</code> export — heatmap source (per-day intensity 0–4) and full-fidelity export in one.</p>
+          <p class="prm"><code>year=YYYY</code></p>
+        </div>
+      </li>
+      <li class="ep">
+        <span class="method" data-m="GET">GET</span>
+        <button class="path" type="button" data-copy="/api/meta" aria-label="Copy https://tokens.lkwplus.com/api/meta">/api/meta
+          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
+          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+        </button>
+        <a class="ep-aside" href="/api/meta" target="_blank" rel="noopener" aria-label="Open /api/meta in a new tab">open ↗</a>
+        <div class="ep-body">
+          <p>Distinct clients, models (raw + canonical), providers and device names, plus the data range — everything a filter UI needs.</p>
+        </div>
+      </li>
+      <li class="ep">
+        <span class="method" data-m="GET">GET</span>
+        <button class="path" type="button" data-copy="/api/devices" aria-label="Copy https://tokens.lkwplus.com/api/devices">/api/devices
+          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
+          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+        </button>
+        <a class="ep-aside" href="/api/devices" target="_blank" rel="noopener" aria-label="Open /api/devices in a new tab">open ↗</a>
+        <div class="ep-body">
+          <p>Device inventory: first/last seen, CLI version, session and active-time metrics, MCP servers, per-device totals.</p>
+        </div>
+      </li>
+      <li class="ep">
+        <span class="method" data-m="GET">GET</span>
+        <button class="path" type="button" data-copy="/api/submissions" aria-label="Copy https://tokens.lkwplus.com/api/submissions">/api/submissions
+          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
+          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+        </button>
+        <a class="ep-aside" href="/api/submissions" target="_blank" rel="noopener" aria-label="Open /api/submissions in a new tab">open ↗</a>
+        <div class="ep-body">
+          <p>Submission audit log (mode, row count, changed days, warnings, CLI version) — for checking report cadence.</p>
+          <p class="prm"><code>limit=50</code> (max 500)</p>
+        </div>
+      </li>
+      <li class="ep">
+        <span class="method" data-m="GET">GET</span>
+        <button class="path" type="button" data-copy="/api/health" aria-label="Copy https://tokens.lkwplus.com/api/health">/api/health
+          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
+          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+        </button>
+        <a class="ep-aside" href="/api/health" target="_blank" rel="noopener" aria-label="Open /api/health in a new tab">open ↗</a>
+        <div class="ep-body">
+          <p>Liveness check.</p>
+        </div>
+      </li>
+    </ol>
+
+    <h3 class="label">Examples</h3>
+    <pre><code><span class="c"># per-client daily series for a stacked chart, last 30 days</span>
+curl "https://tokens.lkwplus.com/api/timeseries?interval=day&amp;group=client&amp;from=2026-06-18"
+
+<span class="c"># top models across cursor only</span>
+curl "https://tokens.lkwplus.com/api/breakdown?by=model&amp;client=cursor&amp;limit=10"
+
+<span class="c"># 2026 contribution graph for the heatmap</span>
+curl "https://tokens.lkwplus.com/api/graph?year=2026"</code></pre>
+  </section>
+
+  <section id="cli-api">
+    <h2>CLI endpoints</h2>
+    <p>
+      The write side implements the official server’s wire contract, so a stock CLI works with
+      <code>TOKENS_API_URL=https://tokens.lkwplus.com</code>. Writes require
+      <code>Authorization: Bearer $TOKENS_API_TOKEN</code>. The browser OAuth device flow is not
+      implemented — log in with <code>tokens login --token</code> instead.
+    </p>
+
+    <ol class="eps">
+      <li class="ep">
+        <span class="method" data-m="POST">POST</span>
+        <button class="path" type="button" data-copy="/api/submit" aria-label="Copy https://tokens.lkwplus.com/api/submit">/api/submit
+          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
+          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+        </button>
+        <span class="ep-aside">auth</span>
+        <div class="ep-body">
+          <p>Full submission payload from <code>tokens submit / serve / autosubmit</code>. Responds with <code>{success, submissionId, metrics, mode, warnings?}</code>.</p>
+        </div>
+      </li>
+      <li class="ep">
+        <span class="method" data-m="DELETE">DEL</span>
+        <button class="path" type="button" data-copy="/api/settings/submitted-data" aria-label="Copy https://tokens.lkwplus.com/api/settings/submitted-data">/api/settings/submitted-data
+          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
+          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+        </button>
+        <span class="ep-aside">auth</span>
+        <div class="ep-body">
+          <p>Wipes all stored data (<code>tokens delete-submitted-data</code>).</p>
+        </div>
+      </li>
+      <li class="ep">
+        <span class="method" data-m="GET">GET</span>
+        <button class="path" type="button" data-copy="/api/auth/token" aria-label="Copy https://tokens.lkwplus.com/api/auth/token">/api/auth/token
+          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
+          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+        </button>
+        <span class="ep-aside">auth</span>
+        <div class="ep-body">
+          <p>Token validation for <code>tokens login --token</code>. Responds with <code>{user: {username}}</code>.</p>
+        </div>
+      </li>
+      <li class="ep">
+        <span class="method" data-m="GET">GET</span>
+        <button class="path" type="button" data-copy="/api/me/stats" aria-label="Copy https://tokens.lkwplus.com/api/me/stats">/api/me/stats
+          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
+          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+        </button>
+        <a class="ep-aside" href="/api/me/stats" target="_blank" rel="noopener" aria-label="Open /api/me/stats in a new tab">open ↗</a>
+        <div class="ep-body">
+          <p>Official schemaVersion-1 contract for the TUI remote tab: totals, per-day series, device list.</p>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <section id="operations">
+    <h2>Operations</h2>
+    <ul class="notes">
+      <li>
+        Deploys are Git-driven: every push to <code>main</code> builds and deploys through
+        Workers Builds. Manual <code>wrangler deploy</code> is an emergency escape hatch only.
+      </li>
+      <li>
+        Backups are layered — D1 Time Travel covers the last 30 days, the daily R2 export covers
+        forever, and the per-device raw payload can replay-rebuild the database after a schema
+        change.
+      </li>
+      <li>
+        The CORS allowlist for browser reads lives in <code>src/http.ts</code>; origins must be
+        exact scheme+host matches (localhost is always allowed).
+      </li>
+      <li>
+        Verify locally with <code>npm run types &amp;&amp; npx tsc --noEmit</code>; run against a
+        real CLI with <code>TOKENS_API_URL=http://localhost:8787 tokens submit</code>.
+      </li>
+    </ul>
+  </section>
+</main>
+
+<footer>
+  <p>Source · <a href="https://github.com/synthpop123/tokens-worker" rel="noopener">synthpop123/tokens-worker</a></p>
+  <p>Runs on Cloudflare Workers · © 2026 lkw123</p>
+</footer>
+
+<script>
+  (() => {
+    const CANONICAL = "https://tokens.lkwplus.com";
+
+    /* Click-to-copy on endpoint paths. */
+    for (const btn of document.querySelectorAll(".path")) {
+      let timer;
+      btn.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(CANONICAL + btn.dataset.copy);
+        } catch {
+          return;
+        }
+        btn.setAttribute("data-copied", "");
+        clearTimeout(timer);
+        timer = setTimeout(() => btn.removeAttribute("data-copied"), 1400);
+      });
+    }
+
+    /* Live status + stats strip, from this Worker's own /api/site. */
+    const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
+    const exact = new Intl.NumberFormat("en-US");
+    const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+    const usdWhole = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+    const monthYear = new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+
+    const cost = (v) => (v >= 100 ? usdWhole : usd).format(v);
+    const ago = (epochMs) => {
+      const minutes = Math.round((Date.now() - epochMs) / 60000);
+      if (minutes < 1) return "just now";
+      if (minutes < 60) return `${minutes}m ago`;
+      if (minutes < 60 * 24) return `${Math.round(minutes / 60)}h ago`;
+      return `${Math.round(minutes / (60 * 24))}d ago`;
+    };
+
+    const dot = document.getElementById("dot");
+    const dotLabel = document.getElementById("dot-label");
+    const cell = (kind, key) =>
+      document.querySelector(`.strip [data-${kind}="${key}"]`);
+    const set = (key, value, sub, title) => {
+      const v = cell("k", key);
+      const s = cell("s", key);
+      v.textContent = value;
+      if (title) v.title = title;
+      s.textContent = sub;
+    };
+    const status = (state, text, title) => {
+      dot.dataset.state = state;
+      dot.title = title;
+      dotLabel.textContent = text;
+    };
+
+    fetch("/api/site")
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((site) => {
+        const t = site.ranges.all.totals;
+        set(
+          "tokens",
+          compact.format(t.tokens),
+          t.activeDays > 0 ? `≈ ${compact.format(t.tokens / t.activeDays)} per active day` : "—",
+          `${exact.format(t.tokens)} tokens`
+        );
+        set(
+          "cost",
+          cost(t.cost),
+          t.tokens > 0 ? `≈ ${usd.format(t.cost / (t.tokens / 1e6))} per 1M tokens` : "—",
+          usd.format(t.cost)
+        );
+        set(
+          "days",
+          String(t.activeDays),
+          t.firstDate ? `since ${monthYear.format(new Date(`${t.firstDate}T12:00:00Z`))}` : "—"
+        );
+
+        const devices = site.devices ?? [];
+        const lastSeen = devices.reduce((max, d) => Math.max(max, d.lastSeen ?? 0), 0);
+        const online = devices.filter(
+          (d) => d.lastSeen !== null && Date.now() - d.lastSeen < 45 * 60000
+        ).length;
+        set(
+          "report",
+          lastSeen > 0 ? ago(lastSeen) : "—",
+          `${online} of ${devices.length} device${devices.length === 1 ? "" : "s"} online`,
+          lastSeen > 0 ? new Date(lastSeen).toISOString() : undefined
+        );
+
+        if (online > 0) {
+          status("on", "Collector online, devices reporting", `Reporting · last submission ${ago(lastSeen)}`);
+        } else {
+          status("idle", "Collector online, devices idle", `Idle · last submission ${lastSeen > 0 ? ago(lastSeen) : "never"}`);
+        }
+      })
+      .catch(() => {
+        for (const key of ["tokens", "cost", "days", "report"]) set(key, "—", "");
+        status("down", "Collector unreachable", "Couldn’t reach /api/site");
+      });
+  })();
+</script>
+</body>
+</html>

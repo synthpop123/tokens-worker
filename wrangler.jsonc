@@ -10,6 +10,12 @@
   "vars": {
     "TOKENS_USERNAME": "lkw123"
   },
+  // Static homepage (architecture + API reference). Assets are matched
+  // before the Worker runs, so "/" serves public/index.html and every
+  // /api/* request falls through to the router as before.
+  "assets": {
+    "directory": "./public"
+  },
   "d1_databases": [
     {
       "binding": "DB",
