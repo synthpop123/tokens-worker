@@ -8,13 +8,6 @@ export interface Env {
   TOKENS_USERNAME?: string;
 }
 
-const ALLOWED_ORIGINS = [
-  "https://lkwplus.com",
-  "https://likangwei.vercel.app",
-  "https://lkw123.vercel.app",
-  "https://lkw.vercel.app",
-];
-
 export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** All dates in the system are calendar days in this zone. */
@@ -33,21 +26,21 @@ export function isoToday(): string {
 }
 
 /**
- * Browsers only ever GET the public read API; the write endpoints are
- * CLI-only and exempt from CORS, so the preflight surface stays minimal.
+ * The read API is public and cookie-less, so CORS is a static wildcard.
+ * Reads are cacheable, and an Origin-dependent header on a cacheable
+ * response is a cache-poisoning hazard: the Worker homepage's same-origin
+ * fetch of /api/site (no Origin header) used to cache a variant without
+ * CORS headers, which the browser then reused for lkwplus.com/tokens'
+ * cross-origin read — failing its CORS check. A constant header set keeps
+ * every response byte-identical for every requester, so no cache tier can
+ * serve the wrong variant. Write endpoints are CLI-only (bearer token)
+ * and never carry CORS headers.
  */
-export function corsHeaders(origin: string | null): Record<string, string> {
-  const allowed =
-    origin !== null &&
-    (ALLOWED_ORIGINS.includes(origin) || /^http:\/\/localhost(:\d+)?$/.test(origin));
-  if (!allowed) return {};
-  return {
-    "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Methods": "GET, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-    Vary: "Origin",
-  };
-}
+export const CORS_HEADERS: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
 
 export function json(
   data: unknown,

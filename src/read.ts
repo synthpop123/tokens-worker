@@ -26,7 +26,7 @@
  */
 
 import type { Env } from "./http";
-import { json, corsHeaders, DATE_RE } from "./http";
+import { json, CORS_HEADERS, DATE_RE } from "./http";
 import { LEGACY_DEVICE_KEY, LEGACY_DEVICE_NAME } from "./payload";
 import { canonicalModel, mergeModelRows, type ModelMetrics } from "./models";
 
@@ -131,10 +131,10 @@ function parseFilters(url: URL): FilterResult {
   };
 }
 
-function cachedJson(request: Request, data: unknown): Response {
+function cachedJson(data: unknown): Response {
   return json(data, 200, {
     "Cache-Control": "public, max-age=300",
-    ...corsHeaders(request.headers.get("Origin")),
+    ...CORS_HEADERS,
   });
 }
 
@@ -174,7 +174,7 @@ export async function handleStats(request: Request, env: Env): Promise<Response>
   ]);
 
   const totalsRow = (totals.results[0] ?? {}) as Record<string, unknown>;
-  return cachedJson(request, {
+  return cachedJson({
     range: rangeInfo(url),
     totals: {
       input: totalsRow.input ?? 0,
@@ -252,7 +252,7 @@ export async function handleTimeseries(request: Request, env: Env): Promise<Resp
     a.period === b.period ? b.tokens - a.tokens : a.period < b.period ? -1 : 1
   );
 
-  return cachedJson(request, {
+  return cachedJson({
     range: rangeInfo(url),
     interval,
     group: groupExpr ? group : null,
@@ -315,7 +315,7 @@ export async function handleBreakdown(request: Request, env: Env): Promise<Respo
   rows.sort(byTokensDesc);
   if (limit !== null) rows = rows.slice(0, limit);
 
-  return cachedJson(request, {
+  return cachedJson({
     range: rangeInfo(url),
     by,
     rows,
@@ -469,7 +469,7 @@ export async function handleGraph(request: Request, env: Env): Promise<Response>
     }
   }
 
-  return cachedJson(request, {
+  return cachedJson({
     meta: {
       generatedAt: new Date().toISOString(),
       version: "tokens-worker",
@@ -520,7 +520,7 @@ export async function handleMeta(request: Request, env: Env): Promise<Response> 
   const rangeRow = (range.results[0] ?? {}) as { start?: string | null; end?: string | null };
   const lastSeen = (lastReport.results[0] as { lastSeen?: number | null } | undefined)?.lastSeen;
 
-  return cachedJson(request, {
+  return cachedJson({
     clients: (clients.results as Array<{ client: string }>).map((r) => r.client),
     // Raw spellings drive the model= filter; canonical shows the merged name.
     models: (models.results as Array<{ model: string; provider: string }>).map((r) => ({
@@ -557,7 +557,7 @@ export async function handleDevices(request: Request, env: Env): Promise<Respons
     )
     .all<Record<string, unknown>>();
 
-  return cachedJson(request, {
+  return cachedJson({
     devices: rows.results.map(({ id, name, ...rest }) => ({
       name:
         (typeof name === "string" && name.trim()) ||
@@ -590,7 +590,5 @@ export async function handleSubmissions(request: Request, env: Env): Promise<Res
     .bind(limit)
     .all();
 
-  return json({ submissions: rows.results }, 200, {
-    ...corsHeaders(request.headers.get("Origin")),
-  });
+  return json({ submissions: rows.results }, 200, CORS_HEADERS);
 }

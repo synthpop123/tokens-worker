@@ -51,7 +51,7 @@ Writes require `Authorization: Bearer $TOKENS_API_TOKEN`; reads are public.
 
 Not implemented: the browser GitHub-OAuth device flow (`POST /api/auth/device[/poll]`); log in with `tokens login --token` instead.
 
-### Public read endpoints (no auth; CORS allowlist in `src/http.ts` + localhost; 5-min cache)
+### Public read endpoints (no auth; open CORS; 5-min cache)
 
 Internal device ids are never exposed — public rows identify devices by display name, and the `device=` filter takes names. Model rows on the aggregate endpoints are merged under **canonical names** (per-effort variants like `claude-fable-5-thinking-max` merged into `claude-fable-5` — rules + alias table in `src/models.ts`); `/api/graph` keeps raw spellings as the full-fidelity export. "Active days" count any activity, messages included (early-2025 Cursor logs carry message counts without token usage).
 
@@ -132,7 +132,7 @@ TOKENS_API_URL=http://localhost:8787 tokens submit
 
 ```
 src/index.ts             Router + endpoint table
-src/http.ts              Env, CORS allowlist, timing-safe bearer auth, TZ
+src/http.ts              Env, static CORS headers, timing-safe bearer auth, TZ
 src/payload.ts           Submission types, normalization, official validation
 src/merge.ts             Per-day per-client merge engine (regression guard,
                          revision floors, authoritative coverage)

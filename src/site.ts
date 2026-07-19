@@ -26,7 +26,7 @@
  */
 
 import type { Env } from "./http";
-import { corsHeaders, isoToday } from "./http";
+import { CORS_HEADERS, isoToday } from "./http";
 import { canonicalModel } from "./models";
 
 const CACHE_SECONDS = 300;
@@ -345,26 +345,24 @@ export async function handleSite(request: Request, env: Env, ctx: ExecutionConte
     // stale-while-revalidate: after the 5 minutes, browsers reuse the
     // stale copy instantly and refetch in the background.
     "Cache-Control": `public, max-age=${CACHE_SECONDS}, stale-while-revalidate=${STALE_SECONDS}`,
+    ...CORS_HEADERS,
   };
-  const withCors = (response: Response): Response => {
+  // cache.match rewrites Cache-Control to the zone's Browser Cache TTL
+  // (a day), which would let browsers pin stale payloads — restate the
+  // full header set on hits.
+  const withHeaders = (response: Response): Response => {
     const out = new Response(response.body, response);
-    for (const [key, value] of Object.entries(corsHeaders(request.headers.get("Origin")))) {
-      out.headers.set(key, value);
-    }
-    // cache.match rewrites Cache-Control to the zone's Browser Cache TTL
-    // (a day), which would let browsers pin stale payloads — restate ours.
-    out.headers.set("Cache-Control", headers["Cache-Control"]);
+    for (const [key, value] of Object.entries(headers)) out.headers.set(key, value);
     return out;
   };
 
   // Two cache tiers, no D1 on either: the PoP-local edge cache (~10 ms,
   // 5-minute TTL), then KV (~50 ms hot, a few hundred ms on a cold PoP —
-  // rewritten by every accepted submission). The cached entry itself
-  // stays origin-neutral; CORS is attached per-request after lookup.
+  // rewritten by every accepted submission).
   const cacheKey = new Request(new URL("/api/site", request.url).toString());
   const cache = caches.default;
   const hit = await cache.match(cacheKey);
-  if (hit) return withCors(hit);
+  if (hit) return withHeaders(hit);
 
   // Recompose inline only when the KV entry is missing (first deploy) or
   // was composed on a previous calendar day and no device has reported
@@ -376,5 +374,5 @@ export async function handleSite(request: Request, env: Env, ctx: ExecutionConte
     ctx.waitUntil(putSiteCache(env, body));
   }
   ctx.waitUntil(cache.put(cacheKey, new Response(body, { headers })));
-  return withCors(new Response(body, { headers }));
+  return new Response(body, { headers });
 }

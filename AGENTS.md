@@ -22,9 +22,12 @@ doesn't know about, and the next push silently overwrites it.
  static homepage documenting the architecture and API, with live totals
  from `/api/site` and a light/dark toggle. When endpoints or merge
  semantics change, update it together with the README.
-- CORS allowlist for the public read API lives in `ALLOWED_ORIGINS` in
-  `src/http.ts` (plus a localhost regex). Origins must be exact
-  scheme+host matches.
+- The public read API serves a static `Access-Control-Allow-Origin: *`
+  (`CORS_HEADERS` in `src/http.ts`). Never make response headers depend on
+  the request's `Origin`: reads are browser-cacheable, and an
+  Origin-dependent variant poisons the HTTP cache (a same-origin fetch of
+  `/api/site` on this Worker's homepage once cached a no-CORS variant that
+  broke the subsequent cross-origin read from lkwplus.com/tokens).
 - All dates are calendar days in `Asia/Shanghai` (`TIME_ZONE` in
   `src/http.ts`).
 - Secrets (`TOKENS_API_TOKEN`) live on the Worker, not in the repo;

@@ -14,8 +14,8 @@
  *   GET    /api/auth/token              tokens login --token (auth)
  *   GET    /api/me/stats                TUI remote tab
  *
- * Read side — public, it is just usage data (CORS for lkwplus.com,
- * 5-minute cache; internal device ids are never exposed):
+ * Read side — public, it is just usage data (open CORS, 5-minute cache;
+ * internal device ids are never exposed):
  *   GET /api/site — precomposed dashboard view for lkwplus.com/tokens,
  *       served straight from KV (refreshed by the cron below)
  *   GET /api/stats, /api/timeseries, /api/breakdown, /api/graph,
@@ -35,7 +35,7 @@
  */
 
 import type { Env } from "./http";
-import { json, corsHeaders } from "./http";
+import { json, CORS_HEADERS } from "./http";
 import { handleSubmit, handleAuthToken, handleDeleteSubmittedData, handleMeStats } from "./submit";
 import { handleSite } from "./site";
 import {
@@ -63,10 +63,7 @@ export default {
     const method = request.method;
 
     if (method === "OPTIONS") {
-      return new Response(null, {
-        status: 204,
-        headers: corsHeaders(request.headers.get("Origin")),
-      });
+      return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
 
     if (method === "POST" && pathname === "/api/submit") {

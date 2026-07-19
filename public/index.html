@@ -684,9 +684,9 @@
         <span class="node">lkwplus.com/tokens</span>
       </p>
       <p class="cap">
-        No auth on reads — it is usage data on a single-user backend. Browsers are limited by a
-        CORS allowlist; internal device ids are never exposed, rows identify devices by display
-        name only.
+        No auth on reads — it is usage data on a single-user backend, open to any origin
+        (public, cookie-less). Internal device ids are never exposed, rows identify devices by
+        display name only.
       </p>
     </div>
   </section>
@@ -970,8 +970,9 @@ curl "https://tokens.lkwplus.com/api/graph?year=2026"</code></pre>
         change.
       </li>
       <li>
-        The CORS allowlist for browser reads lives in <code>src/http.ts</code>; origins must be
-        exact scheme+host matches (localhost is always allowed).
+        Browser reads carry a static <code>Access-Control-Allow-Origin: *</code>
+        (<code>src/http.ts</code>). Responses are cacheable, so headers must never depend on the
+        request's <code>Origin</code> — a per-origin variant would poison the HTTP cache.
       </li>
       <li>
         Verify locally with <code>npm run types &amp;&amp; npx tsc --noEmit</code>; run against a
