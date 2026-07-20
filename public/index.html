@@ -774,8 +774,9 @@
       <code>client</code>, <code>model</code>, <code>provider</code>, <code>device</code>
       (comma-separated exact matches; <code>device</code> takes display names). Every aggregate
       row carries the full metric set — the five token categories, their sum, messages and cost.
-      Aggregates merge per-effort model spellings under canonical names
-      (<code>claude-fable-5-thinking-max</code> → <code>claude-fable-5</code>);
+      Aggregates merge model and provider spellings under canonical ids
+      (<code>claude-fable-5-thinking-max</code> → <code>claude-fable-5</code>,
+      <code>openai-codex</code> → <code>openai</code>);
       <code>/api/graph</code> keeps raw ids as the full-fidelity export.
     </p>
 

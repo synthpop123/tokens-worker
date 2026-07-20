@@ -10,8 +10,10 @@
  * device inventory with CLI metadata (version, sessions, active-time
  * totals, MCP servers). Every breakdown row (model / client / provider)
  * also carries its usage span — distinct active days plus first/last date
- * inside the range. Model rows are merged under canonical names (see
- * models.ts). "Active" days count messages too: early-2025 Cursor logs
+ * inside the range. Model rows are merged under canonical names and
+ * provider ids are canonicalized (see models.ts) before any aggregation,
+ * so the daily provider slices agree with the provider breakdown.
+ * "Active" days count messages too: early-2025 Cursor logs
  * carry message counts but no token usage, and those days really were
  * active.
  *
@@ -27,13 +29,16 @@
 
 import type { Env } from "./http";
 import { CORS_HEADERS, isoToday } from "./http";
-import { canonicalModel } from "./models";
+import { canonicalModel, canonicalProvider } from "./models";
 
 const CACHE_SECONDS = 300;
 const STALE_SECONDS = 3600;
-// Bump on shape changes so a fresh deploy recomposes instead of serving
-// the previous schema out of KV until the next submission.
-export const SITE_KEY = "site-v2";
+// The KV key never changes; the schema version rides along as metadata.
+// Bump SITE_VERSION on shape or semantics changes so a fresh deploy
+// recomposes on first read instead of serving the previous schema out of
+// KV until the next submission.
+const SITE_KEY = "site";
+const SITE_VERSION = 3;
 
 const RANGES = [
   { key: "week", days: 7 },
@@ -277,6 +282,7 @@ export async function composeSiteBody(env: Env): Promise<string> {
 
   for (const row of usage.results as unknown as UsageRow[]) {
     const model = canonicalModel(row.model);
+    row.provider = canonicalProvider(row.provider);
     for (const agg of aggs) {
       if (agg.from === null || row.date >= agg.from) agg.add(row, model);
     }
@@ -326,10 +332,13 @@ export async function composeSiteBody(env: Env): Promise<string> {
   });
 }
 
-/** Store a composed payload; the composition day rides along as metadata
- *  so the read path can detect day rollover without parsing the body. */
+/** Store a composed payload; the composition day and schema version ride
+ *  along as metadata so the read path can detect day rollover and stale
+ *  schemas without parsing the body. */
 function putSiteCache(env: Env, body: string): Promise<void> {
-  return env.SITE_CACHE.put(SITE_KEY, body, { metadata: { today: isoToday() } });
+  return env.SITE_CACHE.put(SITE_KEY, body, {
+    metadata: { today: isoToday(), version: SITE_VERSION },
+  });
 }
 
 /** Recompute the site payload and store it in KV. */
@@ -364,12 +373,15 @@ export async function handleSite(request: Request, env: Env, ctx: ExecutionConte
   const hit = await cache.match(cacheKey);
   if (hit) return withHeaders(hit);
 
-  // Recompose inline only when the KV entry is missing (first deploy) or
-  // was composed on a previous calendar day and no device has reported
-  // since midnight (range windows must slide anyway).
-  const { value, metadata } = await env.SITE_CACHE.getWithMetadata<{ today?: string }>(SITE_KEY);
+  // Recompose inline only when the KV entry is missing, was composed by
+  // an older schema version, or was composed on a previous calendar day
+  // and no device has reported since midnight (range windows must slide).
+  const { value, metadata } = await env.SITE_CACHE.getWithMetadata<{
+    today?: string;
+    version?: number;
+  }>(SITE_KEY);
   let body = value;
-  if (body === null || metadata?.today !== isoToday()) {
+  if (body === null || metadata?.version !== SITE_VERSION || metadata?.today !== isoToday()) {
     body = await composeSiteBody(env);
     ctx.waitUntil(putSiteCache(env, body));
   }

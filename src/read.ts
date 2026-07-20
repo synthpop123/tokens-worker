@@ -10,9 +10,10 @@
  *   client, model, provider   comma-separated exact matches (raw ids)
  *   device          comma-separated device names
  *
- * Model rows on the aggregate endpoints (stats, timeseries, breakdown)
- * are merged under canonical names, same as /api/site; /api/graph keeps
- * raw spellings because it doubles as the full-fidelity export.
+ * Model and provider rows on the aggregate endpoints (stats, timeseries,
+ * breakdown) are merged under canonical ids, same as /api/site; /api/graph
+ * keeps raw spellings because it doubles as the full-fidelity export, and
+ * the filters above match raw ids.
  *
  * Endpoints:
  *   GET /api/stats       overview (totals + per-dimension aggregates + daily)
@@ -28,7 +29,7 @@
 import type { Env } from "./http";
 import { json, CORS_HEADERS, DATE_RE } from "./http";
 import { LEGACY_DEVICE_KEY, LEGACY_DEVICE_NAME } from "./payload";
-import { canonicalModel, mergeModelRows, type ModelMetrics } from "./models";
+import { canonicalModel, canonicalProvider, mergeRows, type ModelMetrics } from "./models";
 
 export const METRICS_SQL = `
   sum(u.input) AS input,
@@ -191,10 +192,13 @@ export async function handleStats(request: Request, env: Env): Promise<Response>
     },
     daily: daily.results,
     byClient: byClient.results,
-    byModel: mergeModelRows(
+    byModel: mergeRows(
       byModel.results as unknown as (ModelMetrics & { model: string })[]
     ).sort(byTokensDesc),
-    byProvider: byProvider.results,
+    byProvider: mergeRows(
+      byProvider.results as unknown as (ModelMetrics & { provider: string })[],
+      { field: "provider", canonicalize: canonicalProvider }
+    ).sort(byTokensDesc),
     byDevice: byDevice.results,
   });
 }
@@ -245,8 +249,12 @@ export async function handleTimeseries(request: Request, env: Env): Promise<Resp
 
   type SeriesRow = ModelMetrics & { period: string; key?: string };
   let series = rows.results as unknown as SeriesRow[];
-  if (group === "model") {
-    series = mergeModelRows(series, { modelField: "key", groupBy: (row) => row.period });
+  if (group === "model" || group === "provider") {
+    series = mergeRows(series, {
+      field: "key",
+      canonicalize: group === "model" ? canonicalModel : canonicalProvider,
+      groupBy: (row) => row.period,
+    });
   }
   series.sort((a, b) =>
     a.period === b.period ? b.tokens - a.tokens : a.period < b.period ? -1 : 1
@@ -306,10 +314,18 @@ export async function handleBreakdown(request: Request, env: Env): Promise<Respo
 
   type BreakdownRow = ModelMetrics & Record<string, unknown>;
   let rows = result.results as unknown as BreakdownRow[];
-  if (by.includes("model")) {
-    const others = by.filter((dim) => dim !== "model");
-    rows = mergeModelRows(rows, {
-      groupBy: (row) => others.map((dim) => String(row[dim])).join("\u0000"),
+  const canonicalDims: Record<string, (raw: string) => string> = {
+    model: canonicalModel,
+    provider: canonicalProvider,
+  };
+  for (const dim of by) {
+    const canonicalize = canonicalDims[dim];
+    if (!canonicalize) continue;
+    const others = by.filter((d) => d !== dim);
+    rows = mergeRows(rows, {
+      field: dim,
+      canonicalize,
+      groupBy: (row) => others.map((d) => String(row[d])).join("\u0000"),
     });
   }
   rows.sort(byTokensDesc);

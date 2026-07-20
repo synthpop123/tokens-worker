@@ -1,14 +1,17 @@
 /**
- * Canonical model names, shared by every aggregation endpoint.
+ * Canonical model and provider ids, shared by every aggregation endpoint.
  *
- * The CLIs report one id per (model x reasoning effort x serving tier):
- * `claude-fable-5-thinking-max`, `gpt-5-codex-high`, `composer-2-fast`, ...
- * For aggregate views those are all the same model, so /api/site, /api/stats,
- * /api/breakdown and /api/timeseries merge rows under a canonical name
- * (mergeModelRows / canonicalizeModelRows below). /api/graph keeps the raw
- * spellings — it is the full-fidelity export. Mechanical suffixes are
- * stripped by rule; anything the rules cannot express (Cursor's family-last
- * spellings, dated snapshots) is listed in ALIASES.
+ * The CLIs report one model id per (model x reasoning effort x serving
+ * tier): `claude-fable-5-thinking-max`, `gpt-5-codex-high`,
+ * `composer-2-fast`, ... For aggregate views those are all the same model,
+ * so /api/site, /api/stats, /api/breakdown and /api/timeseries merge rows
+ * under a canonical name (mergeRows below). Provider ids get the same
+ * treatment via a small alias table (canonicalProvider): multi-provider
+ * CLIs spell subscription-auth endpoints as their own providers (pi's
+ * `openai-codex`), which for aggregate views are just the vendor.
+ * /api/graph keeps all raw spellings — it is the full-fidelity export —
+ * and raw ids remain the filter vocabulary (/api/meta, `model=` /
+ * `provider=` params).
  *
  * Maintenance: when a new model shows up with a spelling the rules get
  * wrong, add an ALIASES entry. Mapping a raw name to itself pins it and
@@ -49,6 +52,15 @@ export function canonicalModel(raw: string): string {
   return ALIASES[name] ?? name;
 }
 
+const PROVIDER_ALIASES: Record<string, string> = {
+  // pi's OAuth-through-ChatGPT provider — OpenAI's Codex subscription.
+  "openai-codex": "openai",
+};
+
+export function canonicalProvider(raw: string): string {
+  return PROVIDER_ALIASES[raw] ?? raw;
+}
+
 export interface ModelMetrics {
   input: number;
   output: number;
@@ -72,36 +84,51 @@ const METRIC_KEYS: (keyof ModelMetrics)[] = [
 ];
 
 /**
- * Merge aggregate rows whose model ids share a canonical name: metrics are
- * summed, comma-separated `providers` lists unioned, everything else keeps
- * the first row's value. `groupBy` scopes the merge for rows that carry
- * extra dimensions (e.g. per-period timeseries rows). Output preserves
+ * Merge aggregate rows whose ids share a canonical spelling: metrics are
+ * summed, comma-separated `providers` lists unioned (canonically), and
+ * everything else keeps the first row's value. `field` selects the id
+ * column (default "model") and `canonicalize` the mapping (default
+ * canonicalModel); `groupBy` scopes the merge for rows that carry extra
+ * dimensions (e.g. per-period timeseries rows). Output preserves
  * first-appearance order; callers re-sort as their endpoint requires.
  */
-export function mergeModelRows<T extends ModelMetrics>(
+export function mergeRows<T extends ModelMetrics>(
   rows: T[],
-  options: { modelField?: string; groupBy?: (row: T) => string } = {},
+  options: {
+    field?: string;
+    canonicalize?: (raw: string) => string;
+    groupBy?: (row: T) => string;
+  } = {},
 ): T[] {
-  const modelField = options.modelField ?? "model";
+  const field = options.field ?? "model";
+  const canonicalize = options.canonicalize ?? canonicalModel;
+  const unionProviders = (...lists: unknown[]) =>
+    [
+      ...new Set(
+        lists
+          .flatMap((list) => (typeof list === "string" ? list.split(",") : []))
+          .filter((provider) => provider.length > 0)
+          .map(canonicalProvider),
+      ),
+    ].join(",");
   const merged = new Map<string, T>();
   for (const row of rows) {
     const fields = row as Record<string, unknown>;
-    const model = canonicalModel(String(fields[modelField] ?? ""));
-    const key = (options.groupBy ? `${options.groupBy(row)}\u0000` : "") + model;
+    const id = canonicalize(String(fields[field] ?? ""));
+    const key = (options.groupBy ? `${options.groupBy(row)}\u0000` : "") + id;
     const target = merged.get(key);
     if (!target) {
-      merged.set(key, { ...row, [modelField]: model });
+      const copy = { ...row, [field]: id };
+      if (typeof fields.providers === "string") {
+        (copy as Record<string, unknown>).providers = unionProviders(fields.providers);
+      }
+      merged.set(key, copy);
       continue;
     }
     for (const metric of METRIC_KEYS) target[metric] += row[metric];
     const targetFields = target as Record<string, unknown>;
     if (typeof targetFields.providers === "string" || typeof fields.providers === "string") {
-      const providers = new Set(
-        [targetFields.providers, fields.providers]
-          .flatMap((list) => (typeof list === "string" ? list.split(",") : []))
-          .filter((provider) => provider.length > 0),
-      );
-      targetFields.providers = [...providers].join(",");
+      targetFields.providers = unionProviders(targetFields.providers, fields.providers);
     }
   }
   return [...merged.values()];

@@ -53,7 +53,7 @@ Not implemented: the browser GitHub-OAuth device flow (`POST /api/auth/device[/p
 
 ### Public read endpoints (no auth; open CORS; 5-min cache)
 
-Internal device ids are never exposed — public rows identify devices by display name, and the `device=` filter takes names. Model rows on the aggregate endpoints are merged under **canonical names** (per-effort variants like `claude-fable-5-thinking-max` merged into `claude-fable-5` — rules + alias table in `src/models.ts`); `/api/graph` keeps raw spellings as the full-fidelity export. "Active days" count any activity, messages included (early-2025 Cursor logs carry message counts without token usage).
+Internal device ids are never exposed — public rows identify devices by display name, and the `device=` filter takes names. Model and provider rows on the aggregate endpoints are merged under **canonical ids** (per-effort variants like `claude-fable-5-thinking-max` merged into `claude-fable-5`; subscription-auth provider spellings like pi's `openai-codex` merged into `openai` — rules + alias tables in `src/models.ts`); `/api/graph` keeps raw spellings as the full-fidelity export, and filters match raw ids. "Active days" count any activity, messages included (early-2025 Cursor logs carry message counts without token usage).
 
 All of them accept the same filters, combinable freely:
 
