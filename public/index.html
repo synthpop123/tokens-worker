@@ -640,8 +640,8 @@
     <p>
       One Worker, three bindings. Submissions are the only write event, so they drive everything
       downstream — there is no cron. Reads never queue behind writes: the dashboard payload is
-      precomposed into KV, and the rest of the read API aggregates D1 per request behind a
-      5-minute edge cache.
+      precomposed into KV and served with an ETag so browsers revalidate instead of guessing,
+      and the rest of the read API aggregates D1 per request behind a 5-minute browser cache.
     </p>
 
     <div class="lane">
@@ -679,7 +679,7 @@
       <h3 class="label">Read · public</h3>
       <p class="flow">
         <span class="node">GET /api/*</span><span class="arr" aria-hidden="true">→</span>
-        <span class="node">edge cache · 5 min</span><span class="arr" aria-hidden="true">→</span>
+        <span class="node">ETag · 304 if unchanged</span><span class="arr" aria-hidden="true">→</span>
         <span class="node" data-store>KV / D1</span><span class="arr" aria-hidden="true">→</span>
         <span class="node">lkwplus.com/tokens</span>
       </p>
@@ -769,7 +769,10 @@
   <section id="read-api">
     <h2>Read API</h2>
     <p>
-      Public, no auth, cached for 5 minutes. Every endpoint accepts the same filters, freely
+      Public, no auth. <code>/api/site</code> serves <code>Cache-Control: no-cache</code> with a
+      strong <code>ETag</code> — browsers revalidate every load and get a ~0-byte <code>304</code>
+      while the data is unchanged; the aggregate endpoints cache for 5 minutes.
+      Every endpoint accepts the same filters, freely
       combinable: <code>from</code>/<code>to</code> (inclusive <code>YYYY-MM-DD</code> bounds) and
       <code>client</code>, <code>model</code>, <code>provider</code>, <code>device</code>
       (comma-separated exact matches; <code>device</code> takes display names). Every aggregate
@@ -792,7 +795,7 @@
           <p>
             The one-request dashboard view: totals and breakdowns for four ranges (7/30/90 days,
             all time), the daily series split by provider and by client, and the device inventory.
-            No filters — served from edge cache over KV, never waits on D1.
+            No filters — served from KV with its precomputed ETag, never waits on D1.
           </p>
         </div>
       </li>

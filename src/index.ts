@@ -14,12 +14,14 @@
  *   GET    /api/auth/token              tokens login --token (auth)
  *   GET    /api/me/stats                TUI remote tab
  *
- * Read side — public, it is just usage data (open CORS, 5-minute cache;
- * internal device ids are never exposed):
+ * Read side — public, it is just usage data (open CORS; internal device
+ * ids are never exposed):
  *   GET /api/site — precomposed dashboard view for lkwplus.com/tokens,
- *       served straight from KV (refreshed by the cron below)
+ *       served straight from KV (rewritten on every accepted submission)
+ *       with no-cache + ETag, so browsers revalidate instead of guessing
  *   GET /api/stats, /api/timeseries, /api/breakdown, /api/graph,
  *       /api/meta, /api/devices, /api/submissions, /api/health
+ *       (5-minute browser cache)
  *
  * Every accepted submission refreshes the precomposed /api/site payload
  * in KV and, once per Asia/Shanghai day, exports all tables to R2

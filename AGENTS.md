@@ -28,6 +28,13 @@ doesn't know about, and the next push silently overwrites it.
   Origin-dependent variant poisons the HTTP cache (a same-origin fetch of
   `/api/site` on this Worker's homepage once cached a no-CORS variant that
   broke the subsequent cross-origin read from lkwplus.com/tokens).
+- `/api/site` freshness is event-driven, never TTL-guessed: every
+  accepted submission rewrites the KV payload (ETag in its metadata),
+  and responses serve `Cache-Control: no-cache` + that strong ETag, with
+  `304` on `If-None-Match` (full CORS headers on the 304 too). There is
+  deliberately no `caches.default` edge tier on this endpoint — it was
+  the one layer no event could invalidate (and the scene of the CORS
+  poisoning above). Don't reintroduce TTL heuristics here.
 - All dates are calendar days in `Asia/Shanghai` (`TIME_ZONE` in
   `src/http.ts`).
 - Secrets (`TOKENS_API_TOKEN`) live on the Worker, not in the repo;

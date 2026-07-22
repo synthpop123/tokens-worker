@@ -51,7 +51,9 @@ Writes require `Authorization: Bearer $TOKENS_API_TOKEN`; reads are public.
 
 Not implemented: the browser GitHub-OAuth device flow (`POST /api/auth/device[/poll]`); log in with `tokens login --token` instead.
 
-### Public read endpoints (no auth; open CORS; 5-min cache)
+### Public read endpoints (no auth; open CORS)
+
+`/api/site` is freshness-critical (it backs the live dashboard), so it never guesses with TTLs: `Cache-Control: no-cache` plus a strong `ETag` make browsers revalidate every load — a ~0-byte `304` while the data is unchanged, the new payload the moment a submission rewrote it (worst case ~30 s, KV's per-PoP cache). The aggregate endpoints below it carry a plain 5-minute browser cache.
 
 Internal device ids are never exposed — public rows identify devices by display name, and the `device=` filter takes names. Model and provider rows on the aggregate endpoints are merged under **canonical ids** (per-effort variants like `claude-fable-5-thinking-max` merged into `claude-fable-5`; subscription-auth provider spellings like pi's `openai-codex` merged into `openai` — rules + alias tables in `src/models.ts`); `/api/graph` keeps raw spellings as the full-fidelity export, and filters match raw ids. "Active days" count any activity, messages included (early-2025 Cursor logs carry message counts without token usage).
 
@@ -65,7 +67,7 @@ Every aggregate row carries the full metric set: `input`, `output`, `cacheRead`,
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/site` | Precomposed dashboard view for lkwplus.com/tokens, one request for the whole page: per-range (`week`/`month`/`quarter`/`all`) totals + breakdowns (every model/client/provider row carries its usage span — `days`, `firstDate`, `lastDate`), full daily series split **by provider and by client** with per-day `active` time where reported (for the two trend stackings, weekday profile and heatmap), and the device inventory incl. CLI version, session count, active-time metrics and MCP servers. No filters; served from the edge cache (5 min per PoP), falling back to KV (rewritten on every accepted submission) — requests never wait on D1. `Cache-Control: max-age=300, stale-while-revalidate=3600` |
+| `GET /api/site` | Precomposed dashboard view for lkwplus.com/tokens, one request for the whole page: per-range (`week`/`month`/`quarter`/`all`) totals + breakdowns (every model/client/provider row carries its usage span — `days`, `firstDate`, `lastDate`), full daily series split **by provider and by client** with per-day `active` time where reported (for the two trend stackings, weekday profile and heatmap), and the device inventory incl. CLI version, session count, active-time metrics and MCP servers. No filters; served from KV (rewritten on every accepted submission, ETag stored alongside as metadata) — requests never wait on D1. `Cache-Control: no-cache` + strong `ETag`, `304` on `If-None-Match` |
 | `GET /api/stats` | Overview: `totals` (+ `activeDays`, `firstDate`, `lastDate`), `daily`, `byClient`, `byModel` (canonical, with `providers`), `byProvider`, `byDevice` (by name) |
 | `GET /api/timeseries?interval=day\|week\|month\|year&group=none\|client\|model\|provider\|device` | `{series: [{period, key?, ...metrics}]}`, optionally split by one dimension — e.g. `interval=day&group=client` powers stacked area charts |
 | `GET /api/breakdown?by=client,model&limit=` | Arbitrary multi-dimension rollup; `by` is any combination of `client`, `model`, `provider`, `device`, `date`, `month`, `year` (mirrors the CLI's `--group-by`) |
@@ -142,8 +144,8 @@ src/read.ts              Public read API (shared filter parser)
 src/models.ts            Canonical model names shared by all aggregate
                          endpoints (suffix rules + alias table; extend
                          ALIASES for new spellings)
-src/site.ts              /api/site — precomposed dashboard view (edge cache
-                         over KV over a single D1 batch)
+src/site.ts              /api/site — precomposed dashboard view (no-cache +
+                         ETag over KV over a single D1 batch)
 src/backup.ts            Daily full-table export to R2
 public/                  Static homepage (architecture + API reference),
                          served at / by Workers Static Assets

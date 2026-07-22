@@ -17,28 +17,36 @@
  * carry message counts but no token usage, and those days really were
  * active.
  *
- * Serving path: the payload lives in KV, refreshed on every accepted
+ * Serving path: the payload lives in KV, rewritten by every accepted
  * submission (the only event that changes the data — the account's cron
  * quota is full), so requests never wait on D1 — cold and hot paths alike
- * are a single KV read. A day-rollover guard recomposes when no device
- * has reported since midnight. Composition itself is one D1 batch of
- * three statements: the per-day usage matrix (a few thousand rows at
- * personal scale), daily activity, and the device inventory; all four
- * ranges are aggregated here in JS.
+ * are a single KV read. Freshness is event-driven, not TTL-guessed:
+ * responses carry `Cache-Control: no-cache` plus a strong ETag (SHA-256
+ * of the body, computed at composition time and stored in KV metadata),
+ * so browsers keep a copy but always revalidate — a ~0-byte 304 while
+ * the data is unchanged, the new payload the moment it isn't. The only
+ * staleness left is KV's own per-PoP cache (cacheTtl, 30 s). A
+ * day-rollover guard recomposes when no device has reported since
+ * midnight. Composition itself is one D1 batch of three statements: the
+ * per-day usage matrix (a few thousand rows at personal scale), daily
+ * activity, and the device inventory; all four ranges are aggregated
+ * here in JS.
  */
 
 import type { Env } from "./http";
 import { CORS_HEADERS, isoToday } from "./http";
 import { canonicalModel, canonicalProvider } from "./models";
 
-const CACHE_SECONDS = 300;
-const STALE_SECONDS = 3600;
 // The KV key never changes; the schema version rides along as metadata.
 // Bump SITE_VERSION on shape or semantics changes so a fresh deploy
 // recomposes on first read instead of serving the previous schema out of
 // KV until the next submission.
 const SITE_KEY = "site";
 const SITE_VERSION = 3;
+/** How long a PoP may serve its local copy of the KV entry before
+ *  re-checking central storage — the global worst-case staleness after
+ *  a submission rewrites the payload (30 is the API's minimum). */
+const KV_CACHE_TTL = 30;
 
 const RANGES = [
   { key: "week", days: 7 },
@@ -332,59 +340,70 @@ export async function composeSiteBody(env: Env): Promise<string> {
   });
 }
 
-/** Store a composed payload; the composition day and schema version ride
- *  along as metadata so the read path can detect day rollover and stale
- *  schemas without parsing the body. */
-function putSiteCache(env: Env, body: string): Promise<void> {
+/** What rides along with the KV entry so the read path can validate it
+ *  without parsing the body: the composition day (day-rollover guard),
+ *  the schema version, and the body's ETag (conditional requests). */
+interface SiteMeta {
+  today?: string;
+  version?: number;
+  etag?: string;
+}
+
+/** Strong ETag — SHA-256 of the body, quoted per RFC 9110. Computed once
+ *  at composition time so the read path never hashes anything. */
+async function etagOf(body: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));
+  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `"${hex}"`;
+}
+
+function putSiteCache(env: Env, body: string, etag: string): Promise<void> {
   return env.SITE_CACHE.put(SITE_KEY, body, {
-    metadata: { today: isoToday(), version: SITE_VERSION },
+    metadata: { today: isoToday(), version: SITE_VERSION, etag } satisfies SiteMeta,
   });
 }
 
 /** Recompute the site payload and store it in KV. */
-export async function refreshSiteCache(env: Env): Promise<string> {
+export async function refreshSiteCache(env: Env): Promise<void> {
   const body = await composeSiteBody(env);
-  await putSiteCache(env, body);
-  return body;
+  await putSiteCache(env, body, await etagOf(body));
 }
 
 export async function handleSite(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  const headers = {
-    "Content-Type": "application/json",
-    // stale-while-revalidate: after the 5 minutes, browsers reuse the
-    // stale copy instantly and refetch in the background.
-    "Cache-Control": `public, max-age=${CACHE_SECONDS}, stale-while-revalidate=${STALE_SECONDS}`,
-    ...CORS_HEADERS,
-  };
-  // cache.match rewrites Cache-Control to the zone's Browser Cache TTL
-  // (a day), which would let browsers pin stale payloads — restate the
-  // full header set on hits.
-  const withHeaders = (response: Response): Response => {
-    const out = new Response(response.body, response);
-    for (const [key, value] of Object.entries(headers)) out.headers.set(key, value);
-    return out;
-  };
-
-  // Two cache tiers, no D1 on either: the PoP-local edge cache (~10 ms,
-  // 5-minute TTL), then KV (~50 ms hot, a few hundred ms on a cold PoP —
-  // rewritten by every accepted submission).
-  const cacheKey = new Request(new URL("/api/site", request.url).toString());
-  const cache = caches.default;
-  const hit = await cache.match(cacheKey);
-  if (hit) return withHeaders(hit);
-
-  // Recompose inline only when the KV entry is missing, was composed by
+  // One KV read per request, hot or cold (cacheTtl caps per-PoP
+  // staleness after a submission rewrite). Recompose inline only when
+  // the entry is missing or predates the etag metadata, was composed by
   // an older schema version, or was composed on a previous calendar day
   // and no device has reported since midnight (range windows must slide).
-  const { value, metadata } = await env.SITE_CACHE.getWithMetadata<{
-    today?: string;
-    version?: number;
-  }>(SITE_KEY);
+  const { value, metadata } = await env.SITE_CACHE.getWithMetadata<SiteMeta>(SITE_KEY, {
+    cacheTtl: KV_CACHE_TTL,
+  });
   let body = value;
-  if (body === null || metadata?.version !== SITE_VERSION || metadata?.today !== isoToday()) {
+  let etag = metadata?.etag;
+  if (body === null || !etag || metadata?.version !== SITE_VERSION || metadata?.today !== isoToday()) {
     body = await composeSiteBody(env);
-    ctx.waitUntil(putSiteCache(env, body));
+    etag = await etagOf(body);
+    ctx.waitUntil(putSiteCache(env, body, etag));
   }
-  ctx.waitUntil(cache.put(cacheKey, new Response(body, { headers })));
+
+  // no-cache = store but always revalidate: browsers keep a copy yet
+  // every load asks "still current?" — a ~0-byte 304 while the data is
+  // unchanged, the fresh payload the moment a submission rewrote it.
+  // Freshness is decided by the event-driven KV rewrite, never by a TTL.
+  // The header set is constant across 200 and 304 (CORS included): any
+  // variant-dependent header on a cacheable response is the poisoning
+  // hazard documented in http.ts.
+  const headers = {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-cache",
+    ETag: etag,
+    ...CORS_HEADERS,
+  };
+  // Weak comparison (RFC 9110 §8.8.3.2): Cloudflare's edge compression
+  // may hand the browser a W/-prefixed tag, which it echoes back here.
+  const inm = request.headers.get("If-None-Match");
+  if (inm && inm.split(",").some((tag) => tag.trim().replace(/^W\//, "") === etag)) {
+    return new Response(null, { status: 304, headers });
+  }
   return new Response(body, { headers });
 }

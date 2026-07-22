@@ -1,6 +1,7 @@
 export interface Env {
   DB: D1Database;
-  /** Precomposed /api/site payload, refreshed by the 5-minute cron. */
+  /** Precomposed /api/site payload (+ its ETag in metadata), rewritten
+   *  by every accepted submission. */
   SITE_CACHE: KVNamespace;
   /** Raw submission payloads + daily D1 exports (see backup.ts). */
   ARCHIVE: R2Bucket;
@@ -35,11 +36,15 @@ export function isoToday(): string {
  * every response byte-identical for every requester, so no cache tier can
  * serve the wrong variant. Write endpoints are CLI-only (bearer token)
  * and never carry CORS headers.
+ *
+ * If-None-Match is allowed so scripts that manage their own conditional
+ * requests can revalidate /api/site cross-origin (browser HTTP caches
+ * attach it without a preflight; hand-rolled ones preflight first).
  */
 export const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Content-Type, If-None-Match",
 };
 
 export function json(
