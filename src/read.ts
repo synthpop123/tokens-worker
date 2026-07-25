@@ -2,13 +2,21 @@
  * Public read API over the usage matrix — none of it requires auth (it is
  * usage data on a single-user backend), but internal device ids stay
  * private: every public row identifies devices by display name only.
- * Every endpoint accepts the same filter set, so any view the CLI can
- * produce locally (per client / model / provider / device / arbitrary
- * date window) can be reproduced remotely:
+ *
+ * Query contract: every handler declares the parameters it supports and
+ * anything else is a 400 — a filter that would otherwise be silently
+ * ignored is a lie in the response. The four matrix endpoints (stats,
+ * timeseries, breakdown, graph) share one filter set, so any view the
+ * CLI can produce locally (per client / model / provider / device /
+ * arbitrary date window) can be reproduced remotely:
  *
  *   from, to        YYYY-MM-DD inclusive bounds
  *   client, model, provider   comma-separated exact matches (raw ids)
  *   device          comma-separated device names
+ *
+ * List values are capped (MAX_LIST_VALUES) so the worst case stays far
+ * below D1's 100-bound-parameters-per-query limit. The inventory
+ * endpoints (meta, devices) take no filters; submissions takes limit.
  *
  * Model and provider rows on the aggregate endpoints (stats, timeseries,
  * breakdown) are merged under canonical ids, same as /api/site; /api/graph
@@ -53,6 +61,29 @@ const ACTIVE_DAYS_SQL = `count(DISTINCT CASE
 /** Resolves public device names to internal ids inside filters. */
 const DEVICE_NAME_SUBQUERY = (placeholders: string) =>
   `u.device_id IN (SELECT id FROM devices WHERE name IN (${placeholders}))`;
+
+/** The filter set shared by the four matrix endpoints. */
+const FILTER_PARAMS = ["from", "to", "client", "model", "provider", "device"] as const;
+
+/**
+ * Comma-list values per parameter. Generous for real use (a handful of
+ * clients/devices exist) while capping the worst case at 2 date binds +
+ * 4 × 20 list binds = 82, safely below D1's 100-parameter query limit.
+ */
+const MAX_LIST_VALUES = 20;
+
+/**
+ * Reject query parameters the endpoint would ignore. Silent ignoring is
+ * the failure mode that hurts: ?client=cursor on an endpoint without
+ * client filtering would return unfiltered data that looks filtered.
+ */
+function unsupportedParams(url: URL, supported: readonly string[]): string | null {
+  const unknown = [...new Set(url.searchParams.keys())].filter((k) => !supported.includes(k));
+  if (unknown.length === 0) return null;
+  return `Unsupported parameter${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}. Supported: ${
+    supported.length > 0 ? supported.join(", ") : "none"
+  }.`;
+}
 
 interface FilterResult {
   where: string;
@@ -109,6 +140,9 @@ function parseFilters(url: URL): FilterResult {
     if (!raw) continue;
     const values = raw.split(",").map((v) => v.trim()).filter((v) => v.length > 0);
     if (values.length === 0) continue;
+    if (values.length > MAX_LIST_VALUES) {
+      return { ...EMPTY_FILTERS, error: `${param} accepts at most ${MAX_LIST_VALUES} values` };
+    }
     const placeholders = values.map(() => "?").join(", ");
     const clause = column
       ? `${column} IN (${placeholders})`
@@ -149,6 +183,8 @@ const byTokensDesc = (a: ModelMetrics, b: ModelMetrics) => b.tokens - a.tokens;
 
 export async function handleStats(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
+  const unsupported = unsupportedParams(url, FILTER_PARAMS);
+  if (unsupported) return json({ error: unsupported }, 400);
   const f = parseFilters(url);
   if (f.error) return json({ error: f.error }, 400);
 
@@ -221,6 +257,8 @@ const GROUP_DIMENSIONS: Record<string, string> = {
 
 export async function handleTimeseries(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
+  const unsupported = unsupportedParams(url, [...FILTER_PARAMS, "interval", "group"]);
+  if (unsupported) return json({ error: unsupported }, 400);
   const f = parseFilters(url);
   if (f.error) return json({ error: f.error }, 400);
 
@@ -282,6 +320,8 @@ const BREAKDOWN_DIMENSIONS: Record<string, string> = {
 
 export async function handleBreakdown(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
+  const unsupported = unsupportedParams(url, [...FILTER_PARAMS, "by", "limit"]);
+  if (unsupported) return json({ error: unsupported }, 400);
   const f = parseFilters(url);
   if (f.error) return json({ error: f.error }, 400);
 
@@ -373,6 +413,8 @@ interface GraphUsageRow {
  */
 export async function handleGraph(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
+  const unsupported = unsupportedParams(url, [...FILTER_PARAMS, "year"]);
+  if (unsupported) return json({ error: unsupported }, 400);
   const year = url.searchParams.get("year");
   if (year && !/^\d{4}$/.test(year)) return json({ error: "year must be YYYY" }, 400);
   if (year) {
@@ -524,6 +566,8 @@ export async function handleGraph(request: Request, env: Env): Promise<Response>
 // ---------------------------------------------------------------------------
 
 export async function handleMeta(request: Request, env: Env): Promise<Response> {
+  const unsupported = unsupportedParams(new URL(request.url), []);
+  if (unsupported) return json({ error: unsupported }, 400);
   const [clients, models, providers, devices, range, lastReport] = await env.DB.batch([
     env.DB.prepare(`SELECT DISTINCT client FROM daily_usage ORDER BY client`),
     env.DB.prepare(`SELECT DISTINCT model, provider FROM daily_usage ORDER BY model, provider`),
@@ -555,6 +599,8 @@ export async function handleMeta(request: Request, env: Env): Promise<Response> 
 // ---------------------------------------------------------------------------
 
 export async function handleDevices(request: Request, env: Env): Promise<Response> {
+  const unsupported = unsupportedParams(new URL(request.url), []);
+  if (unsupported) return json({ error: unsupported }, 400);
   const rows = await env.DB
     .prepare(
       `SELECT d.id, d.name, d.first_seen AS firstSeen, d.last_seen AS lastSeen,
@@ -588,6 +634,8 @@ export async function handleDevices(request: Request, env: Env): Promise<Respons
 
 export async function handleSubmissions(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
+  const unsupported = unsupportedParams(url, ["limit"]);
+  if (unsupported) return json({ error: unsupported }, 400);
   const limitRaw = url.searchParams.get("limit");
   const limit = Math.min(Math.max(limitRaw ? parseInt(limitRaw, 10) || 50 : 50, 1), 500);
 

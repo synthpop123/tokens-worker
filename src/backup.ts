@@ -15,6 +15,23 @@
 import type { Env } from "./http";
 import { isoToday } from "./http";
 
+/**
+ * Delete every object in the archive bucket. Raw payload archives and
+ * daily exports both reproduce submitted data, so "delete submitted
+ * data" must cover them — retaining backups would silently break that
+ * promise. R2 lists and deletes in pages of up to 1000 keys.
+ */
+export async function wipeArchive(env: Env): Promise<void> {
+  let cursor: string | undefined;
+  do {
+    const listing = await env.ARCHIVE.list({ cursor });
+    if (listing.objects.length > 0) {
+      await env.ARCHIVE.delete(listing.objects.map((object) => object.key));
+    }
+    cursor = listing.truncated ? listing.cursor : undefined;
+  } while (cursor);
+}
+
 export async function ensureDailyBackup(env: Env): Promise<void> {
   const key = `backup/${isoToday()}.json`;
   if ((await env.ARCHIVE.head(key)) !== null) return;

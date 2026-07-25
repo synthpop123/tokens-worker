@@ -37,12 +37,16 @@ import type { Env } from "./http";
 import { CORS_HEADERS, isoToday } from "./http";
 import { canonicalModel, canonicalProvider } from "./models";
 
-// The KV key never changes; the schema version rides along as metadata.
-// Bump SITE_VERSION on shape or semantics changes so a fresh deploy
-// recomposes on first read instead of serving the previous schema out of
-// KV until the next submission.
+// The KV key never changes; the schema version rides in the response body
+// (as `schemaVersion`, the cross-repo contract the homepage validates and
+// keys its cache by) and in the KV metadata (so a fresh deploy recomposes
+// on first read instead of serving the previous schema out of KV until
+// the next submission). Bump SITE_VERSION on any shape or semantics
+// change, and keep the homepage's SITE_SCHEMA_VERSION plus its committed
+// /api/site fixture (homepage: src/lib/client/tokens.ts + .test.ts) in
+// lockstep.
 const SITE_KEY = "site";
-const SITE_VERSION = 3;
+export const SITE_VERSION = 4;
 /** How long a PoP may serve its local copy of the KV entry before
  *  re-checking central storage — the global worst-case staleness after
  *  a submission rewrites the payload (30 is the API's minimum). */
@@ -332,6 +336,7 @@ export async function composeSiteBody(env: Env): Promise<string> {
   }));
 
   return JSON.stringify({
+    schemaVersion: SITE_VERSION,
     generatedAt: new Date().toISOString(),
     today,
     ranges,

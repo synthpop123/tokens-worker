@@ -5,11 +5,19 @@
   "description": "Self-hosted Cloudflare Worker backend for the tokens CLI (usage reporting to D1)",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "types": "wrangler types"
+    "types": "wrangler types",
+    "test": "vitest run",
+    "check": "npm run types && tsc --noEmit && tsc -p test --noEmit && vitest run"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.8",
     "typescript": "^5.9.0",
+    "vitest": "^4.1.10",
     "wrangler": "^4.111.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "fsevents@2.3.3": true,
+    "workerd@1.20260722.1": true
   }
 }

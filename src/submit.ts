@@ -28,7 +28,7 @@ import {
   modelKey,
 } from "./merge";
 import { refreshSiteCache } from "./site";
-import { ensureDailyBackup } from "./backup";
+import { ensureDailyBackup, wipeArchive } from "./backup";
 
 interface StoredUsageRow {
   date: string;
@@ -77,12 +77,46 @@ function buildStoredState(rows: StoredUsageRow[]): DeviceState {
   return state;
 }
 
+/**
+ * Set-based writes: changed rows travel as one JSON parameter and are
+ * expanded server-side with json_each, so the statement count stays
+ * constant no matter how many days a submission changes. D1 caps queries
+ * per Worker invocation (50 on the Free plan, counted per statement —
+ * splitting into more batches does not reset it), which per-row SQL would
+ * exceed on any full-history first upload. `value ->> N` extracts the
+ * N-th column of each JSON row.
+ */
 const INSERT_USAGE_SQL = `
 INSERT INTO daily_usage
   (device_id, date, client, model, provider,
    input, output, cache_read, cache_write, reasoning, messages, cost,
    parser_revision)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+SELECT ?1,
+       value ->> 0, value ->> 1, value ->> 2, value ->> 3,
+       value ->> 4, value ->> 5, value ->> 6, value ->> 7,
+       value ->> 8, value ->> 9, value ->> 10, value ->> 11
+FROM json_each(?2)`;
+
+const DELETE_USAGE_SQL = `
+DELETE FROM daily_usage
+WHERE device_id = ?1 AND date IN (SELECT value FROM json_each(?2))`;
+
+/** WHERE true disambiguates the upsert clause after INSERT ... SELECT. */
+const UPSERT_ACTIVITY_SQL = `
+INSERT INTO daily_activity (device_id, date, active_time_ms)
+SELECT ?1, value ->> 0, value ->> 1 FROM json_each(?2) WHERE true
+ON CONFLICT (device_id, date) DO UPDATE SET
+  active_time_ms = excluded.active_time_ms`;
+
+/** Rows per INSERT statement — bounds the JSON parameter comfortably
+ *  below D1's 2 MB per-value cap (~120 bytes/row × 5000 ≈ 600 KB). */
+const USAGE_ROWS_PER_STATEMENT = 5000;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
 
 export async function handleSubmit(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!(await isAuthorized(request, env))) {
@@ -189,59 +223,62 @@ export async function handleSubmit(request: Request, env: Env, ctx: ExecutionCon
   }
 
   // ---- Plan writes --------------------------------------------------------
-  // Statements are grouped so one day's DELETE+INSERTs never split across
-  // batches: a fresh full-history upload can exceed what a single D1 batch
-  // reliably handles, and if a later batch fails the already-written days
-  // stay internally consistent — the next idempotent resubmit heals the rest.
+  // Everything lands in one D1 batch — one transaction, so a submission
+  // either applies fully or not at all. Set-based statements (see
+  // INSERT_USAGE_SQL) keep the batch a handful of queries even for a
+  // full-history first upload.
   const now = Date.now();
-  const groups: D1PreparedStatement[][] = [];
-  let insertedRows = 0;
+  const statements: D1PreparedStatement[] = [];
 
+  // One JSON row per (client, model, provider) of every changed day,
+  // column order matching INSERT_USAGE_SQL after the leading device_id.
+  const changedDates: string[] = [];
+  const usageRows: (string | number)[][] = [];
   for (const [date, day] of changedDays) {
-    const group: D1PreparedStatement[] = [
-      env.DB.prepare(`DELETE FROM daily_usage WHERE device_id = ? AND date = ?`).bind(deviceId, date),
-    ];
+    changedDates.push(date);
     for (const [client, data] of day) {
       for (const [key, m] of data.models) {
         const sep = key.indexOf("\u0000");
-        const model = key.slice(0, sep);
-        const provider = key.slice(sep + 1);
-        group.push(
-          env.DB.prepare(INSERT_USAGE_SQL).bind(
-            deviceId, date, client, model, provider,
-            m.input, m.output, m.cacheRead, m.cacheWrite, m.reasoning,
-            m.messages, m.cost, data.revision
-          )
-        );
-        insertedRows++;
+        usageRows.push([
+          date, client, key.slice(0, sep), key.slice(sep + 1),
+          m.input, m.output, m.cacheRead, m.cacheWrite, m.reasoning,
+          m.messages, m.cost, data.revision,
+        ]);
       }
     }
-    groups.push(group);
+  }
+  const insertedRows = usageRows.length;
+
+  if (changedDates.length > 0) {
+    statements.push(
+      env.DB.prepare(DELETE_USAGE_SQL).bind(deviceId, JSON.stringify(changedDates))
+    );
+  }
+  for (const rows of chunk(usageRows, USAGE_ROWS_PER_STATEMENT)) {
+    statements.push(env.DB.prepare(INSERT_USAGE_SQL).bind(deviceId, JSON.stringify(rows)));
   }
 
   // Per-day active time from the submission envelope.
+  const activityRows: [string, number][] = [];
   for (const day of contributions) {
-    const activeTimeMs = day.activeTimeMs;
-    if (activeTimeMs == null || storedActivity.get(day.date) === activeTimeMs) continue;
-    groups.push([
-      env.DB
-        .prepare(
-          `INSERT INTO daily_activity (device_id, date, active_time_ms)
-           VALUES (?, ?, ?)
-           ON CONFLICT (device_id, date) DO UPDATE SET
-             active_time_ms = excluded.active_time_ms`
-        )
-        .bind(deviceId, day.date, asNonNegativeInt(activeTimeMs)),
-    ]);
+    if (day.activeTimeMs == null) continue;
+    const activeTimeMs = asNonNegativeInt(day.activeTimeMs);
+    if (storedActivity.get(day.date) !== activeTimeMs) {
+      activityRows.push([day.date, activeTimeMs]);
+    }
+  }
+  if (activityRows.length > 0) {
+    statements.push(
+      env.DB.prepare(UPSERT_ACTIVITY_SQL).bind(deviceId, JSON.stringify(activityRows))
+    );
   }
 
   // Device row with envelope metadata.
-  const finalGroup: D1PreparedStatement[] = [];
   const tm = payload.timeMetrics;
   const mcpServers = Array.isArray(payload.mcpServers)
     ? payload.mcpServers.filter((s): s is string => typeof s === "string" && s.length > 0)
     : null;
-  finalGroup.push(
+  statements.push(
     env.DB
       .prepare(
         `INSERT INTO devices
@@ -274,7 +311,7 @@ export async function handleSubmit(request: Request, env: Env, ctx: ExecutionCon
   // Audit row.
   const submissionId = crypto.randomUUID();
   const dates = contributions.map((d) => d.date).sort();
-  finalGroup.push(
+  statements.push(
     env.DB
       .prepare(
         `INSERT INTO submissions
@@ -300,19 +337,7 @@ export async function handleSubmit(request: Request, env: Env, ctx: ExecutionCon
       )
   );
 
-  groups.push(finalGroup);
-
-  // Chunk day-groups into batches, never splitting a group.
-  const MAX_BATCH_STATEMENTS = 100;
-  let batch: D1PreparedStatement[] = [];
-  for (const group of groups) {
-    if (batch.length > 0 && batch.length + group.length > MAX_BATCH_STATEMENTS) {
-      await env.DB.batch(batch);
-      batch = [];
-    }
-    batch.push(...group);
-  }
-  if (batch.length > 0) await env.DB.batch(batch);
+  await env.DB.batch(statements);
 
   // Archive the accepted payload verbatim. Submissions are full rescans,
   // so the latest one per device reproduces its whole history — enough to
@@ -377,12 +402,16 @@ export async function handleAuthToken(request: Request, env: Env): Promise<Respo
   return json({ user: { username: env.TOKENS_USERNAME ?? "self-hosted", avatarUrl: null } });
 }
 
-/** DELETE /api/settings/submitted-data — wipe everything for this account. */
-export async function handleDeleteSubmittedData(
-  request: Request,
-  env: Env,
-  ctx: ExecutionContext
-): Promise<Response> {
+/**
+ * DELETE /api/settings/submitted-data — wipe everything for this account,
+ * across all three stores: the four D1 tables, every R2 object (raw
+ * payload archives and daily exports reproduce submitted data, so they
+ * go too), and the precomposed KV site payload, which is recomposed
+ * synchronously so the public dashboard never serves deleted data after
+ * the CLI has been told the deletion succeeded. Runs unconditionally,
+ * so a retry completes whatever a failed earlier attempt left behind.
+ */
+export async function handleDeleteSubmittedData(request: Request, env: Env): Promise<Response> {
   if (!(await isAuthorized(request, env))) {
     return json({ error: "Invalid API token" }, 401);
   }
@@ -390,25 +419,28 @@ export async function handleDeleteSubmittedData(
     .prepare(`SELECT count(*) AS n FROM submissions`)
     .first<{ n: number }>();
   const n = count?.n ?? 0;
-  if (n === 0) {
-    return json({ deleted: false, deletedSubmissions: 0 });
-  }
   await env.DB.batch([
     env.DB.prepare(`DELETE FROM daily_usage`),
     env.DB.prepare(`DELETE FROM daily_activity`),
     env.DB.prepare(`DELETE FROM devices`),
     env.DB.prepare(`DELETE FROM submissions`),
   ]);
-  ctx.waitUntil(refreshSiteCache(env));
-  return json({ deleted: true, deletedSubmissions: n });
+  await wipeArchive(env);
+  await refreshSiteCache(env);
+  return json({ deleted: n > 0, deletedSubmissions: n });
 }
 
 /**
  * GET /api/me/stats — stable wire contract consumed by the CLI TUI remote
- * tab (schemaVersion 1). The CLI always sends a bearer token, but this is
- * read-only usage data, so no auth is required (single-user backend).
+ * tab (schemaVersion 1). Auth matches the official implementation (and
+ * POST /api/submit): the response carries internal device ids, which the
+ * public read API deliberately never exposes. The CLI always sends its
+ * bearer token here, so requiring it costs nothing.
  */
 export async function handleMeStats(request: Request, env: Env): Promise<Response> {
+  if (!(await isAuthorized(request, env))) {
+    return json({ error: "Invalid API token" }, 401);
+  }
   const [totals, days, devices] = await env.DB.batch([
     env.DB.prepare(
       `SELECT coalesce(sum(input + output + cache_read + cache_write + reasoning), 0) AS tokens,

@@ -760,8 +760,8 @@
         <dd>The official mathematical-consistency checks run on every submission (day totals vs client sums, future dates, duplicates…). Failures return <code>400</code> with details.</dd>
       </div>
       <div>
-        <dt>Chunked writes</dt>
-        <dd>A day’s DELETE+INSERTs always share one D1 batch; if a multi-batch first upload fails mid-flight, prior days stay consistent and the next idempotent resubmit heals the rest.</dd>
+        <dt>Atomic set-based writes</dt>
+        <dd>Changed rows travel as JSON parameters expanded server-side (<code>json_each</code>), so even a full-history first upload is a handful of statements in one D1 batch — one transaction, no partial-write states, safely below D1’s per-invocation query limits.</dd>
       </div>
     </dl>
   </section>
@@ -772,10 +772,13 @@
       Public, no auth. <code>/api/site</code> serves <code>Cache-Control: no-cache</code> with a
       strong <code>ETag</code> — browsers revalidate every load and get a ~0-byte <code>304</code>
       while the data is unchanged; the aggregate endpoints cache for 5 minutes.
-      Every endpoint accepts the same filters, freely
+      The four matrix endpoints (<code>stats</code>, <code>timeseries</code>,
+      <code>breakdown</code>, <code>graph</code>) share one filter set, freely
       combinable: <code>from</code>/<code>to</code> (inclusive <code>YYYY-MM-DD</code> bounds) and
       <code>client</code>, <code>model</code>, <code>provider</code>, <code>device</code>
-      (comma-separated exact matches; <code>device</code> takes display names). Every aggregate
+      (comma-separated exact matches, at most 20 values each; <code>device</code> takes display
+      names). Parameters an endpoint does not support are rejected with a <code>400</code> rather
+      than silently ignored. Every aggregate
       row carries the full metric set — the five token categories, their sum, messages and cost.
       Aggregates merge model and provider spellings under canonical ids
       (<code>claude-fable-5-thinking-max</code> → <code>claude-fable-5</code>,
@@ -795,6 +798,7 @@
           <p>
             The one-request dashboard view: totals and breakdowns for four ranges (7/30/90 days,
             all time), the daily series split by provider and by client, and the device inventory.
+            The body carries a <code>schemaVersion</code> the consumer validates before rendering.
             No filters — served from KV with its precomputed ETag, never waits on D1.
           </p>
         </div>
@@ -854,7 +858,7 @@
         </button>
         <a class="ep-aside" href="/api/meta" target="_blank" rel="noopener" aria-label="Open /api/meta in a new tab">open ↗</a>
         <div class="ep-body">
-          <p>Distinct clients, models (raw + canonical), providers and device names, plus the data range — everything a filter UI needs.</p>
+          <p>Distinct clients, models (raw + canonical), providers and device names, plus the data range — everything a filter UI needs. No filters.</p>
         </div>
       </li>
       <li class="ep">
@@ -865,7 +869,7 @@
         </button>
         <a class="ep-aside" href="/api/devices" target="_blank" rel="noopener" aria-label="Open /api/devices in a new tab">open ↗</a>
         <div class="ep-body">
-          <p>Device inventory: first/last seen, CLI version, session and active-time metrics, MCP servers, per-device totals.</p>
+          <p>Device inventory: first/last seen, CLI version, session and active-time metrics, MCP servers, per-device totals. No filters.</p>
         </div>
       </li>
       <li class="ep">
@@ -908,7 +912,7 @@ curl "https://tokens.lkwplus.com/api/graph?year=2026"</code></pre>
     <h2>CLI endpoints</h2>
     <p>
       The write side implements the official server’s wire contract, so a stock CLI works with
-      <code>TOKENS_API_URL=https://tokens.lkwplus.com</code>. Writes require
+      <code>TOKENS_API_URL=https://tokens.lkwplus.com</code>. Every CLI endpoint requires
       <code>Authorization: Bearer $TOKENS_API_TOKEN</code>. The browser OAuth device flow is not
       implemented — log in with <code>tokens login --token</code> instead.
     </p>
@@ -933,7 +937,7 @@ curl "https://tokens.lkwplus.com/api/graph?year=2026"</code></pre>
         </button>
         <span class="ep-aside">auth</span>
         <div class="ep-body">
-          <p>Wipes all stored data (<code>tokens delete-submitted-data</code>).</p>
+          <p>Wipes all stored data across all three stores (<code>tokens delete-submitted-data</code>): the D1 tables, every R2 archive and backup, and the KV site payload — recomposed before the response, so success means the public dashboard is already clean.</p>
         </div>
       </li>
       <li class="ep">
@@ -953,9 +957,9 @@ curl "https://tokens.lkwplus.com/api/graph?year=2026"</code></pre>
           <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
           <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
         </button>
-        <a class="ep-aside" href="/api/me/stats" target="_blank" rel="noopener" aria-label="Open /api/me/stats in a new tab">open ↗</a>
+        <span class="ep-aside">auth</span>
         <div class="ep-body">
-          <p>Official schemaVersion-1 contract for the TUI remote tab: totals, per-day series, device list.</p>
+          <p>Official schemaVersion-1 contract for the TUI remote tab: totals, per-day series, device list. Authenticated because it returns internal device ids, which the public read API never does.</p>
         </div>
       </li>
     </ol>
@@ -966,7 +970,10 @@ curl "https://tokens.lkwplus.com/api/graph?year=2026"</code></pre>
     <ul class="notes">
       <li>
         Deploys are Git-driven: every push to <code>main</code> builds and deploys through
-        Workers Builds. Manual <code>wrangler deploy</code> is an emergency escape hatch only.
+        Workers Builds, whose build command runs the full gate — type checks plus the vitest
+        suite (unit tests for the merge engine, validation and canonicalization; integration
+        tests over real D1/KV/R2 bindings) — so a red check blocks the deploy. CI runs the same
+        gate on every push. Manual <code>wrangler deploy</code> is an emergency escape hatch only.
       </li>
       <li>
         Backups are layered — D1 Time Travel covers the last 30 days, the daily R2 export covers

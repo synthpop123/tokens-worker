@@ -1,0 +1,15 @@
+# Keeps the SHA-pinned workflow actions and the npm dependency tree
+# current, and surfaces security advisories for both.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]

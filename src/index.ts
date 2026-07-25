@@ -12,7 +12,7 @@
  *   POST   /api/submit                  tokens submit / serve / autosubmit (auth)
  *   DELETE /api/settings/submitted-data tokens delete-submitted-data (auth)
  *   GET    /api/auth/token              tokens login --token (auth)
- *   GET    /api/me/stats                TUI remote tab
+ *   GET    /api/me/stats                TUI remote tab (auth; exposes device ids)
  *
  * Read side — public, it is just usage data (open CORS; internal device
  * ids are never exposed):
@@ -72,7 +72,7 @@ export default {
       return handleSubmit(request, env, ctx);
     }
     if (method === "DELETE" && pathname === "/api/settings/submitted-data") {
-      return handleDeleteSubmittedData(request, env, ctx);
+      return handleDeleteSubmittedData(request, env);
     }
 
     if (method === "GET") {
