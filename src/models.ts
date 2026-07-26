@@ -40,6 +40,9 @@ const ALIASES: Record<string, string> = {
   "kimi-k2-instruct-0905": "kimi-k2-instruct",
   "gemini-2.5-pro-exp-03-25": "gemini-2.5-pro",
   "gemini-2.5-pro-preview-05-06": "gemini-2.5-pro",
+  // The grok CLI spells its agentic tier as a "-build" model (reported as
+  // grok-4.5-build-free; the suffix rules strip the serving tier first).
+  "grok-4.5-build": "grok-4.5",
 };
 
 export function canonicalModel(raw: string): string {

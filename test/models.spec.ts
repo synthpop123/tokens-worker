@@ -21,10 +21,12 @@ describe("canonicalModel", () => {
     expect(canonicalModel("claude-4-6-sonnet")).toBe("claude-sonnet-4-6");
     expect(canonicalModel("gemini-2.5-pro-exp-03-25")).toBe("gemini-2.5-pro");
     expect(canonicalModel("kimi-k2-instruct-0905")).toBe("kimi-k2-instruct");
+    expect(canonicalModel("grok-4.5-build")).toBe("grok-4.5");
   });
 
   it("applies aliases after suffix stripping too", () => {
     expect(canonicalModel("claude-4-5-opus-thinking")).toBe("claude-opus-4-5");
+    expect(canonicalModel("grok-4.5-build-free")).toBe("grok-4.5");
   });
 
   it("leaves unknown names alone", () => {
