@@ -36,10 +36,14 @@ const ALIASES: Record<string, string> = {
   "claude-4-sonnet": "claude-sonnet-4",
   "claude-4-5-sonnet": "claude-sonnet-4-5",
   "claude-4-6-sonnet": "claude-sonnet-4-6",
-  // Dated snapshots of the same model.
-  "kimi-k2-instruct-0905": "kimi-k2-instruct",
+  // Dated snapshots and preview/variant spellings of the same model.
+  // (Alias lookup is single-hop, so every spelling maps straight to the
+  // final name — no chaining through an intermediate alias.)
+  "kimi-k2-instruct": "kimi-k2",
+  "kimi-k2-instruct-0905": "kimi-k2",
   "gemini-2.5-pro-exp-03-25": "gemini-2.5-pro",
   "gemini-2.5-pro-preview-05-06": "gemini-2.5-pro",
+  "gemini-3-pro-preview": "gemini-3-pro",
   // The grok CLI spells its agentic tier as a "-build" model (reported as
   // grok-4.5-build-free; the suffix rules strip the serving tier first).
   "grok-4.5-build": "grok-4.5",

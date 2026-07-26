@@ -20,7 +20,9 @@ describe("canonicalModel", () => {
     expect(canonicalModel("claude-4-5-opus")).toBe("claude-opus-4-5");
     expect(canonicalModel("claude-4-6-sonnet")).toBe("claude-sonnet-4-6");
     expect(canonicalModel("gemini-2.5-pro-exp-03-25")).toBe("gemini-2.5-pro");
-    expect(canonicalModel("kimi-k2-instruct-0905")).toBe("kimi-k2-instruct");
+    expect(canonicalModel("gemini-3-pro-preview")).toBe("gemini-3-pro");
+    expect(canonicalModel("kimi-k2-instruct")).toBe("kimi-k2");
+    expect(canonicalModel("kimi-k2-instruct-0905")).toBe("kimi-k2");
     expect(canonicalModel("grok-4.5-build")).toBe("grok-4.5");
   });
 
