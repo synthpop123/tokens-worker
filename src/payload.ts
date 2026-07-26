@@ -1,6 +1,7 @@
 /**
  * Submission payload types and validation, mirroring the official server
- * (packages/frontend/src/lib/validation/submission.ts in missuo/tokens).
+ * (web/src/lib/validation/submission.ts in missuo/tokens; formerly
+ * packages/frontend/src/lib/validation/submission.ts before the v27 rebuild).
  *
  * Deviations from the official zod schema, chosen for a single-user
  * self-hosted backend running current (v3+) CLIs only:

@@ -1,6 +1,7 @@
 /**
  * Per-(device, day, client) merge engine, porting the official server's
- * helpers (packages/frontend/src/lib/db/helpers.ts):
+ * helpers (web/src/lib/db/helpers.ts; formerly
+ * packages/frontend/src/lib/db/helpers.ts before the v27 rebuild):
  *
  *   - aggregateIncomingClientBreakdowns: sum duplicate model rows, track
  *     provenance (client revision = min across its rows).

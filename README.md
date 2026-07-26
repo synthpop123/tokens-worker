@@ -25,7 +25,7 @@ Sidecar tables: `daily_activity` (per-day `activeTimeMs`), `devices` (name, CLI 
 
 ## Merge semantics (write path)
 
-Ported from the official server (`packages/frontend/src/app/api/submit/route.ts` + `lib/db/helpers.ts`):
+Ported from the official server (`web/src/app/api/submit/route.ts` + `lib/db/helpers.ts`; paths as of the upstream v27 rebuild, formerly under `packages/frontend/`):
 
 - **Per-day, per-client replace.** A submission replaces each (device, day, client) bucket it mentions; clients or days it does not mention are left untouched.
 - **Regression guard.** Within the same parser revision, a resubmit that would *reduce* a client's tokens for a day is ignored with a warning (local log cleanup can never erase stored history). A client that disappears from a day while still listed in `summary.clients` is preserved with a warning.
@@ -47,7 +47,7 @@ Every CLI endpoint requires `Authorization: Bearer $TOKENS_API_TOKEN`; the read 
 | `POST /api/submit` | yes | `tokens submit` / `serve` / `autosubmit` | Full submission payload; responds `{success, submissionId, username, metrics, mode, warnings?}` |
 | `DELETE /api/settings/submitted-data` | yes | `tokens delete-submitted-data` | Wipes all stored data across all three stores — D1 tables, every R2 object (raw archives and daily backups reproduce submitted data, so they go too), and the KV site payload, recomposed synchronously so the dashboard is clean before the CLI hears "success"; responds `{deleted, deletedSubmissions}` |
 | `GET /api/auth/token` | yes | `tokens login --token tt_...` | Token validation; responds `{user: {username}}` |
-| `GET /api/me/stats` | yes | `tokens tui` remote tab | Official schemaVersion-1 wire contract: totals, per-day series, device list. Authenticated (like the official server) because it returns internal device ids, which the public read API never does |
+| `GET /api/me/stats` | yes | nothing current (was the `tokens tui` remote tab; CLI v27 removed the TUI) | Official schemaVersion-1 wire contract: totals, per-day series, device list. Kept for compatibility. Authenticated (like the official server) because it returns internal device ids, which the public read API never does |
 
 Not implemented: the browser GitHub-OAuth device flow (`POST /api/auth/device[/poll]`); log in with `tokens login --token` instead.
 
