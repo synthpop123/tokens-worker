@@ -7,6 +7,7 @@
 
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
+import { SITE_VERSION } from "../src/site";
 import { AUTH, call, DEVICE_ID, reset, submissionPayload, submit } from "./helpers";
 
 beforeEach(() => reset());
@@ -81,7 +82,7 @@ describe("submit flow", () => {
     // KV: the site payload was recomposed by this submission.
     const site = await env.SITE_CACHE.getWithMetadata<{ version?: number }>("site");
     expect(site.value).not.toBeNull();
-    expect(site.metadata?.version).toBe(4);
+    expect(site.metadata?.version).toBe(SITE_VERSION);
   });
 
   it("is idempotent: an identical resubmit merges without rewriting", async () => {
@@ -207,6 +208,88 @@ describe("read API query contract", () => {
     ).json()) as Record<string, any>;
     expect(series.series).toEqual([
       expect.objectContaining({ period: "2026-07", key: "claude-opus-4-5", tokens: 1500 }),
+    ]);
+  });
+
+  it("re-attributes gateway provider rows to model vendors on aggregates", async () => {
+    // Day 2 rewritten as gateway-provider rows: a Zed-hosted Claude model
+    // and GLM through OpenCode's zen gateway.
+    const payload = submissionPayload();
+    payload.summary!.clients = ["cursor", "zed", "opencode"];
+    payload.contributions![1].clients = [
+      {
+        client: "zed",
+        modelId: "claude-sonnet-5",
+        providerId: "zed.dev",
+        tokens: { input: 100, output: 100, cacheRead: 50, cacheWrite: 30, reasoning: 20 },
+        cost: 0.2,
+        messages: 3,
+        provenance: { schemaVersion: 3, messageCount: 3, modelCount: 1 },
+      },
+      {
+        client: "opencode",
+        modelId: "glm-4.7",
+        providerId: "opencode",
+        tokens: { input: 100, output: 50, cacheRead: 30, cacheWrite: 10, reasoning: 10 },
+        cost: 0.1,
+        messages: 1,
+        provenance: { schemaVersion: 3, messageCount: 1, modelCount: 1 },
+      },
+    ];
+    await submit(payload);
+
+    // /api/stats: byProvider re-attributed (no gateway ids), byModel
+    // providers lists re-attributed too.
+    const stats = (await (await call("/api/stats")).json()) as Record<string, any>;
+    expect(stats.byProvider).toEqual([
+      expect.objectContaining({ provider: "anthropic", tokens: 1300 }),
+      expect.objectContaining({ provider: "zai", tokens: 200 }),
+    ]);
+    expect(stats.byModel).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ model: "glm-4.7", providers: "zai" }),
+        expect.objectContaining({ model: "claude-sonnet-5", providers: "anthropic" }),
+      ])
+    );
+
+    // Timeseries and breakdown agree.
+    const series = (await (
+      await call("/api/timeseries?interval=month&group=provider")
+    ).json()) as Record<string, any>;
+    expect(series.series).toEqual([
+      expect.objectContaining({ period: "2026-07", key: "anthropic", tokens: 1300 }),
+      expect.objectContaining({ period: "2026-07", key: "zai", tokens: 200 }),
+    ]);
+    const breakdown = (await (
+      await call("/api/breakdown?by=provider")
+    ).json()) as Record<string, any>;
+    expect(breakdown.rows).toEqual([
+      expect.objectContaining({ provider: "anthropic", tokens: 1300 }),
+      expect.objectContaining({ provider: "zai", tokens: 200 }),
+    ]);
+    expect(breakdown.rows[0]).not.toHaveProperty("model");
+
+    // /api/site: provider breakdown and daily slices agree.
+    const site = (await (await call("/api/site")).json()) as Record<string, any>;
+    expect(site.ranges.all.byProvider).toEqual([
+      expect.objectContaining({ provider: "anthropic", tokens: 1300 }),
+      expect.objectContaining({ provider: "zai", tokens: 200 }),
+    ]);
+    expect(site.daily[1].providers).toEqual({
+      anthropic: expect.objectContaining({ tokens: 300 }),
+      zai: expect.objectContaining({ tokens: 200 }),
+    });
+
+    // Raw ids stay the filter vocabulary: /api/meta lists the gateway
+    // spellings, and provider= matches them.
+    const meta = (await (await call("/api/meta")).json()) as Record<string, any>;
+    expect(meta.providers).toEqual(["anthropic", "opencode", "zed.dev"]);
+    const filtered = (await (
+      await call("/api/stats?provider=zed.dev")
+    ).json()) as Record<string, any>;
+    expect(filtered.totals.tokens).toBe(300);
+    expect(filtered.byProvider).toEqual([
+      expect.objectContaining({ provider: "anthropic", tokens: 300 }),
     ]);
   });
 

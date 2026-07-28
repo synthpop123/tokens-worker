@@ -782,7 +782,11 @@
       row carries the full metric set — the five token categories, their sum, messages and cost.
       Aggregates merge model and provider spellings under canonical ids
       (<code>claude-fable-5-thinking-max</code> → <code>claude-fable-5</code>,
-      <code>openai-codex</code> → <code>openai</code>);
+      <code>openai-codex</code> → <code>openai</code>), and providers mean
+      <em>model vendors</em>: rows whose client reported its own gateway as the
+      provider (<code>zed.dev</code>, <code>opencode</code>) are re-attributed by
+      model name (<code>glm-4.7</code> → <code>zai</code>), with models the rules
+      can't place staying under the gateway id;
       <code>/api/graph</code> keeps raw ids as the full-fidelity export.
     </p>
 

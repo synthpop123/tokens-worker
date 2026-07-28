@@ -11,8 +11,10 @@
  * totals, MCP servers). Every breakdown row (model / client / provider)
  * also carries its usage span — distinct active days plus first/last date
  * inside the range. Model rows are merged under canonical names and
- * provider ids are canonicalized (see models.ts) before any aggregation,
- * so the daily provider slices agree with the provider breakdown.
+ * provider ids are canonicalized with the row's model as context — gateway
+ * providers (zed.dev, opencode, ...) re-attribute to the model's vendor
+ * (see models.ts) — before any aggregation, so the daily provider slices
+ * agree with the provider breakdown.
  * "Active" days count messages too: early-2025 Cursor logs
  * carry message counts but no token usage, and those days really were
  * active.
@@ -46,7 +48,7 @@ import { canonicalModel, canonicalProvider } from "./models";
 // /api/site fixture (homepage: src/lib/client/tokens.ts + .test.ts) in
 // lockstep.
 const SITE_KEY = "site";
-export const SITE_VERSION = 4;
+export const SITE_VERSION = 5;
 /** How long a PoP may serve its local copy of the KV entry before
  *  re-checking central storage — the global worst-case staleness after
  *  a submission rewrites the payload (30 is the API's minimum). */
@@ -294,7 +296,7 @@ export async function composeSiteBody(env: Env): Promise<string> {
 
   for (const row of usage.results as unknown as UsageRow[]) {
     const model = canonicalModel(row.model);
-    row.provider = canonicalProvider(row.provider);
+    row.provider = canonicalProvider(row.provider, row.model);
     for (const agg of aggs) {
       if (agg.from === null || row.date >= agg.from) agg.add(row, model);
     }

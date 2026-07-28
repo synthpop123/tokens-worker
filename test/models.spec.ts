@@ -5,7 +5,13 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { canonicalModel, canonicalProvider, mergeRows, type ModelMetrics } from "../src/models";
+import {
+  canonicalModel,
+  canonicalProvider,
+  inferProviderFromModel,
+  mergeRows,
+  type ModelMetrics,
+} from "../src/models";
 
 describe("canonicalModel", () => {
   it("strips effort/thinking/serving-tier suffixes, repeatedly", () => {
@@ -42,6 +48,51 @@ describe("canonicalProvider", () => {
     expect(canonicalProvider("openai-codex")).toBe("openai");
     expect(canonicalProvider("anthropic")).toBe("anthropic");
     expect(canonicalProvider("")).toBe("");
+  });
+
+  it("re-attributes gateway providers to the model's vendor", () => {
+    expect(canonicalProvider("zed.dev", "claude-sonnet-5-thinking")).toBe("anthropic");
+    expect(canonicalProvider("zed.dev", "gpt-5.5")).toBe("openai");
+    expect(canonicalProvider("opencode", "glm-4.7")).toBe("zai");
+    expect(canonicalProvider("opencode", "kimi-k2.5")).toBe("moonshotai");
+    expect(canonicalProvider("unknown", "gemini-3-pro")).toBe("google");
+    expect(canonicalProvider("", "grok-4.5")).toBe("xai");
+  });
+
+  it("keeps gateway ids for models the rules cannot place", () => {
+    expect(canonicalProvider("opencode", "big-pickle")).toBe("opencode");
+    expect(canonicalProvider("cursor", "composer-2.5")).toBe("cursor");
+    expect(canonicalProvider("cursor", "auto")).toBe("cursor");
+    expect(canonicalProvider("cursor", "premium-tool-call")).toBe("cursor");
+  });
+
+  it("never re-attributes vendor ids, even with model context", () => {
+    expect(canonicalProvider("anthropic", "glm-4.7")).toBe("anthropic");
+    expect(canonicalProvider("openai-codex", "gpt-5.6-sol")).toBe("openai");
+    expect(canonicalProvider("moonshotai", "kimi-k2")).toBe("moonshotai");
+  });
+
+  it("passes gateway ids through unchanged without model context", () => {
+    expect(canonicalProvider("zed.dev")).toBe("zed.dev");
+    expect(canonicalProvider("opencode")).toBe("opencode");
+  });
+});
+
+describe("inferProviderFromModel", () => {
+  it("maps model families to vendors, matching the CLI rules", () => {
+    expect(inferProviderFromModel("claude-opus-4-5")).toBe("anthropic");
+    expect(inferProviderFromModel("fable-preview")).toBe("anthropic");
+    expect(inferProviderFromModel("o3-mini")).toBe("openai");
+    expect(inferProviderFromModel("deepseek-v3.2")).toBe("deepseek");
+    expect(inferProviderFromModel("qwen3-coder")).toBe("qwen");
+    expect(inferProviderFromModel("mimo-v2.5")).toBe("xiaomi");
+  });
+
+  it("requires delimiters on short tokens", () => {
+    // "biglm" contains "glm" but not as a delimited token.
+    expect(inferProviderFromModel("biglm")).toBeNull();
+    expect(inferProviderFromModel("composer-2.5")).toBeNull();
+    expect(inferProviderFromModel("big-pickle")).toBeNull();
   });
 });
 
@@ -98,5 +149,20 @@ describe("mergeRows", () => {
     expect(merged).toHaveLength(1);
     expect(merged[0].provider).toBe("openai");
     expect(merged[0].tokens).toBe(3);
+  });
+
+  it("re-attributes gateway providers in unioned lists by the row's model", () => {
+    const merged = mergeRows([
+      row("glm-4.7", 100, { providers: "opencode" }),
+      row("glm-4.7-max", 50, { providers: "zai" }),
+    ]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].model).toBe("glm-4.7");
+    expect(merged[0].providers).toBe("zai");
+  });
+
+  it("keeps gateway providers on models the rules cannot place", () => {
+    const merged = mergeRows([row("big-pickle", 100, { providers: "opencode" })]);
+    expect(merged[0].providers).toBe("opencode");
   });
 });

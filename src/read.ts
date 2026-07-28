@@ -201,8 +201,10 @@ export async function handleStats(request: Request, env: Env): Promise<Response>
        FROM daily_usage u ${f.where} GROUP BY u.client ORDER BY tokens DESC`),
     q(`SELECT u.model, group_concat(DISTINCT u.provider) AS providers, ${METRICS_SQL}
        FROM daily_usage u ${f.where} GROUP BY u.model`),
-    q(`SELECT u.provider, ${METRICS_SQL}
-       FROM daily_usage u ${f.where} GROUP BY u.provider ORDER BY tokens DESC`),
+    // Per (provider, model) so gateway rows can be re-attributed to the
+    // model's vendor before merging back down to providers.
+    q(`SELECT u.provider, u.model, ${METRICS_SQL}
+       FROM daily_usage u ${f.where} GROUP BY u.provider, u.model`),
     q(`SELECT coalesce(nullif(trim(d.name), ''), 'Unnamed device') AS device,
          d.last_seen AS lastSeen,
          count(DISTINCT u.date) AS activeDays, ${METRICS_SQL}
@@ -232,8 +234,10 @@ export async function handleStats(request: Request, env: Env): Promise<Response>
       byModel.results as unknown as (ModelMetrics & { model: string })[]
     ).sort(byTokensDesc),
     byProvider: mergeRows(
-      byProvider.results as unknown as (ModelMetrics & { provider: string })[],
-      { field: "provider", canonicalize: canonicalProvider }
+      (byProvider.results as unknown as (ModelMetrics & { provider: string; model: string })[]).map(
+        ({ model, ...row }) => ({ ...row, provider: canonicalProvider(row.provider, model) })
+      ),
+      { field: "provider", canonicalize: (id) => id }
     ).sort(byTokensDesc),
     byDevice: byDevice.results,
   });
@@ -275,24 +279,35 @@ export async function handleTimeseries(request: Request, env: Env): Promise<Resp
   }
 
   const join = group === "device" ? "LEFT JOIN devices d ON d.id = u.device_id" : "";
+  // Provider series carry the model per row (dropped after use), so
+  // gateway providers can be re-attributed to the model's vendor.
+  const modelCol = group === "provider" ? ", u.model AS model" : "";
   const select = groupExpr
-    ? `SELECT ${periodExpr} AS period, ${groupExpr} AS key, ${METRICS_SQL}`
+    ? `SELECT ${periodExpr} AS period, ${groupExpr} AS key${modelCol}, ${METRICS_SQL}`
     : `SELECT ${periodExpr} AS period, ${METRICS_SQL}`;
-  const groupBy = groupExpr ? `GROUP BY period, key` : `GROUP BY period`;
+  const groupBy = groupExpr ? `GROUP BY period, key${modelCol ? ", u.model" : ""}` : `GROUP BY period`;
 
   const rows = await env.DB
     .prepare(`${select} FROM daily_usage u ${join} ${f.where} ${groupBy}`)
     .bind(...f.params)
     .all();
 
-  type SeriesRow = ModelMetrics & { period: string; key?: string };
+  type SeriesRow = ModelMetrics & { period: string; key?: string; model?: string };
   let series = rows.results as unknown as SeriesRow[];
-  if (group === "model" || group === "provider") {
+  if (group === "model") {
     series = mergeRows(series, {
       field: "key",
-      canonicalize: group === "model" ? canonicalModel : canonicalProvider,
+      canonicalize: canonicalModel,
       groupBy: (row) => row.period,
     });
+  } else if (group === "provider") {
+    series = mergeRows(
+      series.map(({ model, ...row }) => ({
+        ...row,
+        key: canonicalProvider(row.key ?? "", model),
+      })),
+      { field: "key", canonicalize: (id) => id, groupBy: (row) => row.period }
+    );
   }
   series.sort((a, b) =>
     a.period === b.period ? b.tokens - a.tokens : a.period < b.period ? -1 : 1
@@ -339,8 +354,15 @@ export async function handleBreakdown(request: Request, env: Env): Promise<Respo
   const limitRaw = url.searchParams.get("limit");
   const limit = limitRaw ? Math.min(Math.max(parseInt(limitRaw, 10) || 0, 1), 10000) : null;
 
-  const selectDims = by.map((dim) => BREAKDOWN_DIMENSIONS[dim]).join(", ");
-  const groupDims = by.map((dim) => dim).join(", ");
+  // Provider rows are re-attributed to the model's vendor before merging;
+  // when the caller didn't ask for the model dimension it rides along as
+  // an auxiliary column and is dropped again right after.
+  const auxModel = by.includes("provider") && !by.includes("model");
+  const selectDims = [
+    ...by.map((dim) => BREAKDOWN_DIMENSIONS[dim]),
+    ...(auxModel ? [BREAKDOWN_DIMENSIONS.model] : []),
+  ].join(", ");
+  const groupDims = [...by, ...(auxModel ? ["model"] : [])].join(", ");
   const join = by.includes("device") ? "LEFT JOIN devices d ON d.id = u.device_id" : "";
 
   const result = await env.DB
@@ -354,6 +376,12 @@ export async function handleBreakdown(request: Request, env: Env): Promise<Respo
 
   type BreakdownRow = ModelMetrics & Record<string, unknown>;
   let rows = result.results as unknown as BreakdownRow[];
+  if (by.includes("provider")) {
+    rows = rows.map(({ model, ...rest }) => {
+      const provider = canonicalProvider(String(rest.provider ?? ""), String(model ?? ""));
+      return (auxModel ? { ...rest, provider } : { ...rest, model, provider }) as BreakdownRow;
+    });
+  }
   const canonicalDims: Record<string, (raw: string) => string> = {
     model: canonicalModel,
     provider: canonicalProvider,
