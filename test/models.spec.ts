@@ -30,6 +30,7 @@ describe("canonicalModel", () => {
     expect(canonicalModel("kimi-k2-instruct")).toBe("kimi-k2");
     expect(canonicalModel("kimi-k2-instruct-0905")).toBe("kimi-k2");
     expect(canonicalModel("grok-4.5-build")).toBe("grok-4.5");
+    expect(canonicalModel("cursor-grok-4.5")).toBe("grok-4.5");
   });
 
   it("applies aliases after suffix stripping too", () => {
@@ -57,6 +58,7 @@ describe("canonicalProvider", () => {
     expect(canonicalProvider("opencode", "kimi-k2.5")).toBe("moonshotai");
     expect(canonicalProvider("unknown", "gemini-3-pro")).toBe("google");
     expect(canonicalProvider("", "grok-4.5")).toBe("xai");
+    expect(canonicalProvider("cursor", "cursor-grok-4.5")).toBe("xai");
   });
 
   it("keeps gateway ids for models the rules cannot place", () => {
@@ -159,6 +161,17 @@ describe("mergeRows", () => {
     expect(merged).toHaveLength(1);
     expect(merged[0].model).toBe("glm-4.7");
     expect(merged[0].providers).toBe("zai");
+  });
+
+  it("merges Cursor-prefixed grok into grok-4.5 under xai", () => {
+    const merged = mergeRows([
+      row("grok-4.5", 100, { providers: "xai" }),
+      row("cursor-grok-4.5", 50, { providers: "cursor" }),
+    ]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].model).toBe("grok-4.5");
+    expect(merged[0].tokens).toBe(150);
+    expect(merged[0].providers).toBe("xai");
   });
 
   it("keeps gateway providers on models the rules cannot place", () => {

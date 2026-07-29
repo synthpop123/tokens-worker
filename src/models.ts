@@ -59,6 +59,8 @@ const ALIASES: Record<string, string> = {
   // The grok CLI spells its agentic tier as a "-build" model (reported as
   // grok-4.5-build-free; the suffix rules strip the serving tier first).
   "grok-4.5-build": "grok-4.5",
+  // Cursor prefixes the vendor model id when served through its own routing.
+  "cursor-grok-4.5": "grok-4.5",
 };
 
 export function canonicalModel(raw: string): string {
