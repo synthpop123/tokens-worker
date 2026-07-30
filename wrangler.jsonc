@@ -24,12 +24,15 @@
       "migrations_dir": "./migrations"
     }
   ],
+  // Precomposed /api/site payload (+ its ETag in the entry metadata),
+  // rewritten by every accepted submission.
   "kv_namespaces": [
     {
       "binding": "SITE_CACHE",
       "id": "13d618cc3c6642318451a8f1502630ad"
     }
   ],
+  // Raw submission payloads + daily D1 exports (see src/backup.ts).
   "r2_buckets": [
     {
       "binding": "ARCHIVE",

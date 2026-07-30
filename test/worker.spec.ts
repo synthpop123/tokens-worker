@@ -138,6 +138,23 @@ describe("submit flow", () => {
     const response = await call("/api/submit");
     expect(response.status).toBe(405);
     expect(response.headers.get("Allow")).toBe("POST");
+
+    // Read endpoints too — a known path never answers a misleading 404.
+    const read = await call("/api/site", { method: "POST" });
+    expect(read.status).toBe(405);
+    expect(read.headers.get("Allow")).toBe("GET");
+
+    expect((await call("/api/nope")).status).toBe(404);
+  });
+});
+
+describe("GET /api/health", () => {
+  it("is a browser-readable liveness check", async () => {
+    const response = await call("/api/health");
+    expect(response.status).toBe(200);
+    // Public reads are open to any origin; the health check is no exception.
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(await response.json()).toEqual({ service: "tokens-usage", ok: true });
   });
 });
 
@@ -321,6 +338,53 @@ describe("read API query contract", () => {
     expect((await call("/api/timeseries?interval=hour")).status).toBe(400);
     expect((await call("/api/breakdown?by=nope")).status).toBe(400);
     expect((await call("/api/graph?year=26")).status).toBe(400);
+  });
+
+  it("reads an empty parameter value as an absent one", async () => {
+    // One rule for every parameter: ?group= is not a group named "", and
+    // ?limit= is not a limit of zero.
+    await submit();
+    for (const path of [
+      "/api/timeseries?group=",
+      "/api/timeseries?interval=",
+      "/api/graph?year=",
+      "/api/stats?from=&client=",
+      "/api/submissions?limit=",
+      "/api/breakdown?limit=",
+    ]) {
+      expect((await call(path)).status, path).toBe(200);
+    }
+    const series = (await (await call("/api/timeseries?group=")).json()) as Record<string, any>;
+    expect(series.group).toBeNull();
+  });
+
+  it("does not resolve enum values off Object.prototype", async () => {
+    // Every lookup table keyed by a query value is a Map: as plain objects,
+    // `?interval=constructor` used to pass the `unknown value` guard and
+    // interpolate a function into the SQL (a 500 instead of a 400).
+    for (const path of [
+      "/api/timeseries?interval=constructor",
+      "/api/timeseries?group=toString",
+      "/api/breakdown?by=constructor",
+      "/api/breakdown?by=model,hasOwnProperty",
+    ]) {
+      expect((await call(path)).status, path).toBe(400);
+    }
+  });
+
+  it("rejects an out-of-range limit instead of silently clamping", async () => {
+    for (const path of [
+      "/api/submissions?limit=abc",
+      "/api/submissions?limit=0",
+      "/api/submissions?limit=501",
+      "/api/breakdown?limit=1.5",
+      "/api/breakdown?limit=-1",
+    ]) {
+      const response = await call(path);
+      expect(response.status, path).toBe(400);
+      expect(((await response.json()) as { error: string }).error, path).toContain("limit must be");
+    }
+    expect((await call("/api/submissions?limit=500")).status).toBe(200);
   });
 
   it("never exposes internal device ids on public endpoints", async () => {

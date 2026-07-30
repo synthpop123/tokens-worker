@@ -8,11 +8,11 @@ declare global {
       /** Injected by vitest.config.mts, consumed by test/setup.ts. */
       TEST_MIGRATIONS: D1Migration[];
       /**
-       * Injected by vitest.config.mts. Locally `wrangler types` also
-       * derives this from .dev.vars, but CI machines have no .dev.vars,
-       * so the generated Env lacks it there — this merge keeps the test
-       * typecheck independent of that file. (Merging is safe: when both
-       * declare it, the types are identical.)
+       * Injected by vitest.config.mts. The test `env` is typed from
+       * Cloudflare.Env, which must satisfy src's Env (secrets included)
+       * to be passed to the Worker — and CI has no .dev.vars for
+       * `wrangler types` to derive it from. Merging is safe: where both
+       * declare it, the types are identical.
        */
       TOKENS_API_TOKEN: string;
     }

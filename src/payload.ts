@@ -93,7 +93,9 @@ export interface SubmissionPayload {
 export const LEGACY_DEVICE_KEY = "legacy-default";
 export const LEGACY_DEVICE_NAME = "Legacy submissions";
 
-const LEGACY_CLIENT_ALIASES: Record<string, string> = { kilocode: "kilo" };
+/** A Map, not an object: client ids come straight off the wire, and a
+ *  plain object would resolve `constructor` off Object.prototype. */
+const LEGACY_CLIENT_ALIASES = new Map<string, string>([["kilocode", "kilo"]]);
 
 // Official validation tolerances.
 const COST_REL_TOL = 0.01;
@@ -120,8 +122,7 @@ export function asNonNegativeNumber(value: unknown): number {
 }
 
 function aliasClient(id: unknown): unknown {
-  if (typeof id === "string" && id in LEGACY_CLIENT_ALIASES) return LEGACY_CLIENT_ALIASES[id];
-  return id;
+  return (typeof id === "string" ? LEGACY_CLIENT_ALIASES.get(id) : undefined) ?? id;
 }
 
 /**

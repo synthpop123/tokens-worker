@@ -1,12 +1,13 @@
-export interface Env {
-  DB: D1Database;
-  /** Precomposed /api/site payload (+ its ETag in metadata), rewritten
-   *  by every accepted submission. */
-  SITE_CACHE: KVNamespace;
-  /** Raw submission payloads + daily D1 exports (see backup.ts). */
-  ARCHIVE: R2Bucket;
+/**
+ * Bindings and vars come from wrangler.jsonc via `wrangler types`
+ * (Cloudflare.Env in the generated worker-configuration.d.ts), so the
+ * binding list has exactly one source of truth. Secrets are not in that
+ * file — they live on the Worker, and in the gitignored .dev.vars
+ * locally — so they are declared here.
+ */
+export interface Env extends Cloudflare.Env {
+  /** Bearer token for the write path. */
   TOKENS_API_TOKEN: string;
-  TOKENS_USERNAME?: string;
 }
 
 export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -27,19 +28,17 @@ export function isoToday(): string {
 }
 
 /**
- * The read API is public and cookie-less, so CORS is a static wildcard.
- * Reads are cacheable, and an Origin-dependent header on a cacheable
- * response is a cache-poisoning hazard: the Worker homepage's same-origin
- * fetch of /api/site (no Origin header) used to cache a variant without
- * CORS headers, which the browser then reused for lkwplus.com/tokens'
- * cross-origin read — failing its CORS check. A constant header set keeps
- * every response byte-identical for every requester, so no cache tier can
- * serve the wrong variant. Write endpoints are CLI-only (bearer token)
- * and never carry CORS headers.
+ * The read API is public and cookie-less, so CORS is a static wildcard —
+ * never derived from the request's Origin. Reads are cacheable, and an
+ * Origin-dependent header on a cacheable response poisons caches: this
+ * Worker's homepage fetches /api/site same-origin (no Origin header) and
+ * once cached a variant without CORS headers, which the browser then
+ * reused for lkwplus.com/tokens' cross-origin read. A constant header set
+ * keeps every response byte-identical for every requester.
  *
- * If-None-Match is allowed so scripts that manage their own conditional
- * requests can revalidate /api/site cross-origin (browser HTTP caches
- * attach it without a preflight; hand-rolled ones preflight first).
+ * If-None-Match is allowed so scripts running their own conditional
+ * requests can revalidate /api/site cross-origin. Write endpoints are
+ * CLI-only (bearer token) and carry no CORS headers.
  */
 export const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",

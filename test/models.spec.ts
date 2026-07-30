@@ -5,12 +5,12 @@
  */
 
 import { describe, expect, it } from "vitest";
+import type { Metrics } from "../src/metrics";
 import {
   canonicalModel,
   canonicalProvider,
   inferProviderFromModel,
   mergeRows,
-  type ModelMetrics,
 } from "../src/models";
 
 describe("canonicalModel", () => {
@@ -102,7 +102,7 @@ const row = (
   model: string,
   tokens: number,
   extra: Record<string, unknown> = {}
-): ModelMetrics & { model: string } & Record<string, unknown> => ({
+): Metrics & { model: string } & Record<string, unknown> => ({
   model,
   input: tokens,
   output: 0,
@@ -130,7 +130,7 @@ describe("mergeRows", () => {
   });
 
   it("scopes merging by groupBy (per-period timeseries rows)", () => {
-    type Series = ModelMetrics & { model: string; period: string };
+    type Series = Metrics & { model: string; period: string };
     const merged = mergeRows<Series>(
       [
         { ...row("gpt-5-high", 100), period: "2026-07" },
@@ -142,7 +142,7 @@ describe("mergeRows", () => {
   });
 
   it("canonicalizes an arbitrary field (providers)", () => {
-    type ProviderRow = ModelMetrics & { provider: string };
+    type ProviderRow = Metrics & { provider: string };
     const rows: ProviderRow[] = [
       { ...row("x", 1), provider: "openai-codex" } as unknown as ProviderRow,
       { ...row("x", 2), provider: "openai" } as unknown as ProviderRow,
