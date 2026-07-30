@@ -149,6 +149,50 @@ describe("GET /api/site", () => {
     });
   });
 
+  it("keeps slices whose client or provider id shadows an Object member", async () => {
+    // Nothing constrains a client id beyond "non-empty string", so an id
+    // spelled `constructor` or `__proto__` reaches the per-day slice maps.
+    // On a plain object those resolve inherited values, and the slice then
+    // vanishes from the JSON while the day total still counts it: the
+    // stacked chart under-reports and nothing errors.
+    const payload = submissionPayload();
+    payload.summary!.clients = ["cursor", "constructor", "__proto__"];
+    payload.contributions![1].clients = [
+      {
+        client: "constructor",
+        modelId: "m-a",
+        providerId: "__proto__",
+        tokens: { input: 200, output: 100, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
+        cost: 0.15,
+        messages: 2,
+        provenance: { schemaVersion: 3, messageCount: 2, modelCount: 1 },
+      },
+      {
+        client: "__proto__",
+        modelId: "m-b",
+        providerId: "constructor",
+        tokens: { input: 150, output: 50, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
+        cost: 0.15,
+        messages: 2,
+        provenance: { schemaVersion: 3, messageCount: 2, modelCount: 1 },
+      },
+    ];
+    payload.contributions![1].totals = { tokens: 500, cost: 0.3, messages: 4 };
+    await submit(payload);
+
+    const site = (await (await call("/api/site")).json()) as Record<string, any>;
+    expectSiteContract(site);
+    const day = site.daily.find((d: any) => d.date === "2026-07-19");
+    for (const dim of ["providers", "clients"] as const) {
+      const sliced = Object.values(day[dim]).reduce(
+        (sum: number, slice: any) => sum + slice.tokens,
+        0
+      );
+      expect(sliced, `daily.${dim} must account for the whole day`).toBe(day.tokens);
+    }
+    expect(Object.keys(day.clients).sort()).toEqual(["__proto__", "constructor"]);
+  });
+
   it("revalidates by ETag with a 304 that still carries CORS", async () => {
     await submit();
     const first = await call("/api/site");

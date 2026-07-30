@@ -94,6 +94,17 @@ interface DaySlice {
   cost: number;
 }
 
+/**
+ * The per-day slice maps are keyed by client and provider ids that came
+ * straight from a CLI payload, so they carry no prototype. On a plain
+ * object an id spelled `constructor` or `__proto__` resolves an inherited
+ * value instead of a fresh slot, and the slice then disappears from the
+ * JSON while the day total still counts it — silent under-reporting in the
+ * dashboard's stacked chart, at HTTP 200. A Map would work too, but these
+ * serialize straight into the response as JSON objects.
+ */
+const emptySlices = (): Record<string, DaySlice> => Object.create(null);
+
 interface SiteDay {
   date: string;
   tokens: number;
@@ -231,7 +242,7 @@ export async function composeSiteBody(env: Env): Promise<string> {
   const dayFor = (date: string): SiteDay => {
     let day = daily.get(date);
     if (!day) {
-      day = { date, tokens: 0, cost: 0, messages: 0, providers: {}, clients: {} };
+      day = { date, tokens: 0, cost: 0, messages: 0, providers: emptySlices(), clients: emptySlices() };
       daily.set(date, day);
     }
     return day;
