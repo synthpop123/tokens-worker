@@ -37,7 +37,9 @@ export function isoToday(): string {
  * keeps every response byte-identical for every requester.
  *
  * If-None-Match is allowed so scripts running their own conditional
- * requests can revalidate /api/site cross-origin. Write endpoints are
+ * requests can revalidate /api/site cross-origin: a browser's own HTTP
+ * cache attaches the header without a preflight, but a hand-rolled fetch
+ * preflights first and needs it advertised here. Write endpoints are
  * CLI-only (bearer token) and carry no CORS headers.
  */
 export const CORS_HEADERS: Record<string, string> = {

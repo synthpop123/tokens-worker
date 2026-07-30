@@ -47,10 +47,14 @@ push: the Workers Builds log prints the executed build command, so a
 - Bindings and vars come from `wrangler.jsonc` through `wrangler types`
   (`Cloudflare.Env`), which `src/http.ts` extends with the one secret
   that cannot live there. Don't hand-maintain a binding list; it drifts.
-- Any lookup table keyed by request input (query enum, route key, model
-  id) is a `Map`. Plain objects resolve `constructor`/`toString` off
-  `Object.prototype`, which turns a value that should 400 into SQL
-  garbage or a 500.
+- Never key a plain object by request input (query enum, route key, client
+  / model / provider id). `Object.prototype` supplies `constructor`,
+  `toString` and `__proto__`, so a lookup that should miss instead returns
+  an inherited value: that turned `?interval=constructor` into interpolated
+  SQL and a 500, and a client id of `__proto__` into a `/api/site` slice
+  that vanished from the JSON while the day total still counted it. Use a
+  `Map`, or `Object.create(null)` where the thing must serialize as a JSON
+  object (`emptySlices` in `src/site.ts`).
 - `/` serves `public/index.html` (Workers Static Assets) — a
   self-contained page documenting the architecture and API, with live
   totals from `/api/site`. Assets match before the router runs. When
