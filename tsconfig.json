@@ -6,7 +6,12 @@
     "lib": ["ES2022"],
     "strict": true,
     "noEmit": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    // Imports mean exactly what they say, and dead locals or imports left
+    // behind by a refactor fail the check instead of accumulating.
+    "verbatimModuleSyntax": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
   },
   "include": ["src/**/*.ts", "worker-configuration.d.ts"]
 }

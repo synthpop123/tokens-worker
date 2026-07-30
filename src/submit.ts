@@ -8,6 +8,7 @@
 
 import type { Env } from "./http";
 import { json, isAuthorized } from "./http";
+import { ACTIVE_DAYS_SQL, TOKENS_SQL } from "./metrics";
 import type { SubmissionPayload } from "./payload";
 import {
   normalizePayload,
@@ -359,13 +360,12 @@ export async function handleSubmit(request: Request, env: Env, ctx: ExecutionCon
   const metrics = await env.DB
     .prepare(
       `SELECT
-         coalesce(sum(input + output + cache_read + cache_write + reasoning), 0) AS totalTokens,
-         coalesce(sum(cost), 0) AS totalCost,
-         min(date) AS dateStart,
-         max(date) AS dateEnd,
-         count(DISTINCT CASE WHEN (input + output + cache_read + cache_write + reasoning) > 0
-                               OR messages > 0 THEN date END) AS activeDays
-       FROM daily_usage`
+         coalesce(sum(${TOKENS_SQL}), 0) AS totalTokens,
+         coalesce(sum(u.cost), 0) AS totalCost,
+         min(u.date) AS dateStart,
+         max(u.date) AS dateEnd,
+         ${ACTIVE_DAYS_SQL}
+       FROM daily_usage u`
     )
     .first<{
       totalTokens: number;
@@ -381,7 +381,7 @@ export async function handleSubmit(request: Request, env: Env, ctx: ExecutionCon
   return json({
     success: true,
     submissionId,
-    username: env.TOKENS_USERNAME ?? null,
+    username: env.TOKENS_USERNAME,
     metrics: {
       totalTokens: metrics?.totalTokens ?? 0,
       totalCost: metrics?.totalCost ?? 0,
@@ -399,7 +399,7 @@ export async function handleAuthToken(request: Request, env: Env): Promise<Respo
   if (!(await isAuthorized(request, env))) {
     return json({ error: "Invalid API token" }, 401);
   }
-  return json({ user: { username: env.TOKENS_USERNAME ?? "self-hosted", avatarUrl: null } });
+  return json({ user: { username: env.TOKENS_USERNAME, avatarUrl: null } });
 }
 
 /**
@@ -431,11 +431,10 @@ export async function handleDeleteSubmittedData(request: Request, env: Env): Pro
 }
 
 /**
- * GET /api/me/stats — stable wire contract consumed by the CLI TUI remote
- * tab (schemaVersion 1). Auth matches the official implementation (and
- * POST /api/submit): the response carries internal device ids, which the
- * public read API deliberately never exposes. The CLI always sends its
- * bearer token here, so requiring it costs nothing.
+ * GET /api/me/stats — the official schemaVersion-1 wire contract, kept for
+ * compatibility (its consumer was the CLI's TUI remote tab, which v27
+ * removed). Authenticated like the official implementation: the response
+ * carries internal device ids, which the public read API never exposes.
  */
 export async function handleMeStats(request: Request, env: Env): Promise<Response> {
   if (!(await isAuthorized(request, env))) {
@@ -443,17 +442,17 @@ export async function handleMeStats(request: Request, env: Env): Promise<Respons
   }
   const [totals, days, devices] = await env.DB.batch([
     env.DB.prepare(
-      `SELECT coalesce(sum(input + output + cache_read + cache_write + reasoning), 0) AS tokens,
-              coalesce(sum(cost), 0) AS cost
-       FROM daily_usage`
+      `SELECT coalesce(sum(${TOKENS_SQL}), 0) AS tokens,
+              coalesce(sum(u.cost), 0) AS cost
+       FROM daily_usage u`
     ),
     env.DB.prepare(
-      `SELECT date,
-              sum(input + output + cache_read + cache_write + reasoning) AS tokens,
-              sum(input) AS inputTokens,
-              sum(output) AS outputTokens,
-              sum(cost) AS cost
-       FROM daily_usage GROUP BY date ORDER BY date`
+      `SELECT u.date,
+              sum(${TOKENS_SQL}) AS tokens,
+              sum(u.input) AS inputTokens,
+              sum(u.output) AS outputTokens,
+              sum(u.cost) AS cost
+       FROM daily_usage u GROUP BY u.date ORDER BY u.date`
     ),
     env.DB.prepare(`SELECT id, name, last_seen FROM devices ORDER BY last_seen DESC`),
   ]);
@@ -475,8 +474,9 @@ export async function handleMeStats(request: Request, env: Env): Promise<Respons
     days: days.results,
     devices: deviceRows.map((d) => ({
       id: d.id,
-      displayName:
-        d.name?.trim() || (d.id === LEGACY_DEVICE_KEY ? LEGACY_DEVICE_NAME : "Unnamed device"),
+      // Legacy rows carry LEGACY_DEVICE_NAME from the write path, so one
+      // fallback covers every unnamed device (as the SQL paths do too).
+      displayName: d.name?.trim() || "Unnamed device",
       lastSubmittedAt: d.last_seen != null ? new Date(d.last_seen).toISOString() : null,
     })),
   });

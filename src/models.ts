@@ -7,20 +7,20 @@
  * so /api/site, /api/stats, /api/breakdown and /api/timeseries merge rows
  * under a canonical name (mergeRows below).
  *
- * Provider ids are canonicalized to **model vendors**. The raw ids mix two
- * semantics: clients whose logs record who served the request report their
- * own gateway (Zed threads say `zed.dev` for a Claude model, OpenCode says
- * `opencode` for GLM through its zen gateway, pi spells its
- * subscription-auth endpoint `openai-codex`), while the tokens CLI's
- * cursor parser infers the vendor from the model name because Cursor's
- * export has no provider column. Aggregate views want one answer, so
- * canonicalProvider applies the alias table and — given the row's model —
- * re-attributes gateway rows by the same model-name rules the CLI uses
- * (inferProviderFromModel below). Models the rules can't place (composer,
- * big-pickle, ...) stay under the gateway id, matching the CLI's own
- * fallback for Cursor. /api/graph keeps all raw spellings — it is the
- * full-fidelity export — and raw ids remain the filter vocabulary
- * (/api/meta, `model=` / `provider=` params).
+ * Provider ids are canonicalized to **model vendors**, because the raw ids
+ * mix two semantics: clients whose logs record who served the request
+ * report their own gateway (Zed says `zed.dev` for a Claude model,
+ * OpenCode says `opencode` for GLM through its zen gateway, pi spells its
+ * subscription-auth endpoint `openai-codex`), while the CLI's cursor
+ * parser infers the vendor from the model name because Cursor's export has
+ * no provider column. So canonicalProvider applies the alias table and —
+ * given the row's model — re-attributes gateway rows by those same
+ * model-name rules (inferProviderFromModel). Models the rules can't place
+ * (composer, big-pickle, ...) stay under the gateway id, matching the
+ * CLI's own Cursor fallback.
+ *
+ * Raw spellings remain the filter vocabulary (/api/meta, `model=` /
+ * `provider=`), and /api/graph keeps them as the full-fidelity export.
  *
  * Maintenance: when a new model shows up with a spelling the rules get
  * wrong, add an ALIASES entry. Mapping a raw name to itself pins it and
@@ -29,6 +29,8 @@
  * inferProviderFromModel (keep it in step with the CLI's
  * provider_identity.rs).
  */
+
+import { METRIC_KEYS, type Metrics } from "./metrics";
 
 const EFFORT = "minimal|low|medium|high|xhigh|max";
 
@@ -40,43 +42,47 @@ const SUFFIX_RULES: RegExp[] = [
   /-(?:fast|free)$/, // serving tier
 ];
 
-const ALIASES: Record<string, string> = {
+/** Model ids arrive from CLI payloads, so every lookup table keyed by one
+ *  is a Map — a plain object would resolve `constructor` and `toString`
+ *  off Object.prototype. */
+const ALIASES = new Map<string, string>([
   // Cursor spells Anthropic 4.x models family-last.
-  "claude-4-opus": "claude-opus-4",
-  "claude-4-5-opus": "claude-opus-4-5",
-  "claude-4-6-opus": "claude-opus-4-6",
-  "claude-4-sonnet": "claude-sonnet-4",
-  "claude-4-5-sonnet": "claude-sonnet-4-5",
-  "claude-4-6-sonnet": "claude-sonnet-4-6",
+  ["claude-4-opus", "claude-opus-4"],
+  ["claude-4-5-opus", "claude-opus-4-5"],
+  ["claude-4-6-opus", "claude-opus-4-6"],
+  ["claude-4-sonnet", "claude-sonnet-4"],
+  ["claude-4-5-sonnet", "claude-sonnet-4-5"],
+  ["claude-4-6-sonnet", "claude-sonnet-4-6"],
   // Dated snapshots and preview/variant spellings of the same model.
   // (Alias lookup is single-hop, so every spelling maps straight to the
   // final name — no chaining through an intermediate alias.)
-  "kimi-k2-instruct": "kimi-k2",
-  "kimi-k2-instruct-0905": "kimi-k2",
-  "gemini-2.5-pro-exp-03-25": "gemini-2.5-pro",
-  "gemini-2.5-pro-preview-05-06": "gemini-2.5-pro",
-  "gemini-3-pro-preview": "gemini-3-pro",
+  ["kimi-k2-instruct", "kimi-k2"],
+  ["kimi-k2-instruct-0905", "kimi-k2"],
+  ["gemini-2.5-pro-exp-03-25", "gemini-2.5-pro"],
+  ["gemini-2.5-pro-preview-05-06", "gemini-2.5-pro"],
+  ["gemini-3-pro-preview", "gemini-3-pro"],
   // The grok CLI spells its agentic tier as a "-build" model (reported as
   // grok-4.5-build-free; the suffix rules strip the serving tier first).
-  "grok-4.5-build": "grok-4.5",
+  ["grok-4.5-build", "grok-4.5"],
   // Cursor prefixes the vendor model id when served through its own routing.
-  "cursor-grok-4.5": "grok-4.5",
-};
+  ["cursor-grok-4.5", "grok-4.5"],
+]);
 
 export function canonicalModel(raw: string): string {
-  if (raw in ALIASES) return ALIASES[raw];
+  const pinned = ALIASES.get(raw);
+  if (pinned) return pinned;
   let name = raw;
   for (let prev = ""; prev !== name; ) {
     prev = name;
     for (const rule of SUFFIX_RULES) name = name.replace(rule, "");
   }
-  return ALIASES[name] ?? name;
+  return ALIASES.get(name) ?? name;
 }
 
-const PROVIDER_ALIASES: Record<string, string> = {
+const PROVIDER_ALIASES = new Map<string, string>([
   // pi's OAuth-through-ChatGPT provider — OpenAI's Codex subscription.
-  "openai-codex": "openai",
-};
+  ["openai-codex", "openai"],
+]);
 
 /**
  * Provider ids that name the serving gateway (the client's own endpoint)
@@ -148,34 +154,12 @@ export function inferProviderFromModel(model: string): string | null {
  * ids pass through unchanged.
  */
 export function canonicalProvider(raw: string, model?: string): string {
-  const provider = PROVIDER_ALIASES[raw] ?? raw;
+  const provider = PROVIDER_ALIASES.get(raw) ?? raw;
   if (model !== undefined && GATEWAY_PROVIDERS.has(provider)) {
     return inferProviderFromModel(model) ?? provider;
   }
   return provider;
 }
-
-export interface ModelMetrics {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  reasoning: number;
-  tokens: number;
-  messages: number;
-  cost: number;
-}
-
-const METRIC_KEYS: (keyof ModelMetrics)[] = [
-  "input",
-  "output",
-  "cacheRead",
-  "cacheWrite",
-  "reasoning",
-  "tokens",
-  "messages",
-  "cost",
-];
 
 /**
  * Merge aggregate rows whose ids share a canonical spelling: metrics are
@@ -187,7 +171,7 @@ const METRIC_KEYS: (keyof ModelMetrics)[] = [
  * timeseries rows). Output preserves first-appearance order; callers
  * re-sort as their endpoint requires.
  */
-export function mergeRows<T extends ModelMetrics>(
+export function mergeRows<T extends Metrics>(
   rows: T[],
   options: {
     field?: string;

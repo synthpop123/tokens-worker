@@ -250,6 +250,8 @@
     :root:not([data-theme]) .ic-moon { display: block; }
   }
 
+  /* States: wait (pulsing, pre-fetch), on, idle (the bare gray dot: the
+     collector answered but no device reported recently), down. */
   .dot {
     flex-shrink: 0;
     inline-size: 0.5em;
@@ -266,6 +268,8 @@
     background-color: var(--destructive);
     box-shadow: 0 0 0 0.1875em color-mix(in oklab, var(--destructive) 25%, transparent);
   }
+
+  .sprite { display: none; }
 
   .sr {
     position: absolute;
@@ -580,6 +584,16 @@
 </style>
 </head>
 <body>
+<!-- Icon sprite: the copy/check pair repeats on every endpoint row. -->
+<svg class="sprite" aria-hidden="true">
+  <symbol id="i-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+    <rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/>
+    <path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/>
+  </symbol>
+  <symbol id="i-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8">
+    <path d="m2.5 8.5 4 4 7-9"/>
+  </symbol>
+</svg>
 <a class="skip" href="#main">Skip to content</a>
 
 <header class="mast">
@@ -794,8 +808,8 @@
       <li class="ep">
         <span class="method" data-m="GET">GET</span>
         <button class="path" type="button" data-copy="/api/site" aria-label="Copy https://tokens.lkwplus.com/api/site">/api/site
-          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
-          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
+          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
         </button>
         <a class="ep-aside" href="/api/site" target="_blank" rel="noopener" aria-label="Open /api/site in a new tab">open ↗</a>
         <div class="ep-body">
@@ -810,8 +824,8 @@
       <li class="ep">
         <span class="method" data-m="GET">GET</span>
         <button class="path" type="button" data-copy="/api/stats" aria-label="Copy https://tokens.lkwplus.com/api/stats">/api/stats
-          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
-          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
+          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
         </button>
         <a class="ep-aside" href="/api/stats" target="_blank" rel="noopener" aria-label="Open /api/stats in a new tab">open ↗</a>
         <div class="ep-body">
@@ -821,8 +835,8 @@
       <li class="ep">
         <span class="method" data-m="GET">GET</span>
         <button class="path" type="button" data-copy="/api/timeseries" aria-label="Copy https://tokens.lkwplus.com/api/timeseries">/api/timeseries
-          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
-          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
+          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
         </button>
         <a class="ep-aside" href="/api/timeseries" target="_blank" rel="noopener" aria-label="Open /api/timeseries in a new tab">open ↗</a>
         <div class="ep-body">
@@ -833,20 +847,20 @@
       <li class="ep">
         <span class="method" data-m="GET">GET</span>
         <button class="path" type="button" data-copy="/api/breakdown" aria-label="Copy https://tokens.lkwplus.com/api/breakdown">/api/breakdown
-          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
-          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
+          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
         </button>
         <a class="ep-aside" href="/api/breakdown" target="_blank" rel="noopener" aria-label="Open /api/breakdown in a new tab">open ↗</a>
         <div class="ep-body">
           <p>Arbitrary multi-dimension rollup, mirroring the CLI’s <code>--group-by</code>.</p>
-          <p class="prm"><code>by=client,model,provider,device,date,month,year</code> <code>limit=</code></p>
+          <p class="prm"><code>by=client,model,provider,device,date,month,year</code> <code>limit=</code> (1–10000)</p>
         </div>
       </li>
       <li class="ep">
         <span class="method" data-m="GET">GET</span>
         <button class="path" type="button" data-copy="/api/graph" aria-label="Copy https://tokens.lkwplus.com/api/graph">/api/graph
-          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
-          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
+          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
         </button>
         <a class="ep-aside" href="/api/graph" target="_blank" rel="noopener" aria-label="Open /api/graph in a new tab">open ↗</a>
         <div class="ep-body">
@@ -857,8 +871,8 @@
       <li class="ep">
         <span class="method" data-m="GET">GET</span>
         <button class="path" type="button" data-copy="/api/meta" aria-label="Copy https://tokens.lkwplus.com/api/meta">/api/meta
-          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
-          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
+          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
         </button>
         <a class="ep-aside" href="/api/meta" target="_blank" rel="noopener" aria-label="Open /api/meta in a new tab">open ↗</a>
         <div class="ep-body">
@@ -868,8 +882,8 @@
       <li class="ep">
         <span class="method" data-m="GET">GET</span>
         <button class="path" type="button" data-copy="/api/devices" aria-label="Copy https://tokens.lkwplus.com/api/devices">/api/devices
-          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
-          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
+          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
         </button>
         <a class="ep-aside" href="/api/devices" target="_blank" rel="noopener" aria-label="Open /api/devices in a new tab">open ↗</a>
         <div class="ep-body">
@@ -879,20 +893,20 @@
       <li class="ep">
         <span class="method" data-m="GET">GET</span>
         <button class="path" type="button" data-copy="/api/submissions" aria-label="Copy https://tokens.lkwplus.com/api/submissions">/api/submissions
-          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
-          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
+          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
         </button>
         <a class="ep-aside" href="/api/submissions" target="_blank" rel="noopener" aria-label="Open /api/submissions in a new tab">open ↗</a>
         <div class="ep-body">
           <p>Submission audit log (mode, row count, changed days, warnings, CLI version) — for checking report cadence.</p>
-          <p class="prm"><code>limit=50</code> (max 500)</p>
+          <p class="prm"><code>limit=50</code> (1–500)</p>
         </div>
       </li>
       <li class="ep">
         <span class="method" data-m="GET">GET</span>
         <button class="path" type="button" data-copy="/api/health" aria-label="Copy https://tokens.lkwplus.com/api/health">/api/health
-          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
-          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
+          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
         </button>
         <a class="ep-aside" href="/api/health" target="_blank" rel="noopener" aria-label="Open /api/health in a new tab">open ↗</a>
         <div class="ep-body">
@@ -925,8 +939,8 @@ curl "https://tokens.lkwplus.com/api/graph?year=2026"</code></pre>
       <li class="ep">
         <span class="method" data-m="POST">POST</span>
         <button class="path" type="button" data-copy="/api/submit" aria-label="Copy https://tokens.lkwplus.com/api/submit">/api/submit
-          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
-          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
+          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
         </button>
         <span class="ep-aside">auth</span>
         <div class="ep-body">
@@ -936,8 +950,8 @@ curl "https://tokens.lkwplus.com/api/graph?year=2026"</code></pre>
       <li class="ep">
         <span class="method" data-m="DELETE">DEL</span>
         <button class="path" type="button" data-copy="/api/settings/submitted-data" aria-label="Copy https://tokens.lkwplus.com/api/settings/submitted-data">/api/settings/submitted-data
-          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
-          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
+          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
         </button>
         <span class="ep-aside">auth</span>
         <div class="ep-body">
@@ -947,8 +961,8 @@ curl "https://tokens.lkwplus.com/api/graph?year=2026"</code></pre>
       <li class="ep">
         <span class="method" data-m="GET">GET</span>
         <button class="path" type="button" data-copy="/api/auth/token" aria-label="Copy https://tokens.lkwplus.com/api/auth/token">/api/auth/token
-          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
-          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
+          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
         </button>
         <span class="ep-aside">auth</span>
         <div class="ep-body">
@@ -958,8 +972,8 @@ curl "https://tokens.lkwplus.com/api/graph?year=2026"</code></pre>
       <li class="ep">
         <span class="method" data-m="GET">GET</span>
         <button class="path" type="button" data-copy="/api/me/stats" aria-label="Copy https://tokens.lkwplus.com/api/me/stats">/api/me/stats
-          <svg class="ic-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5v-1a1.5 1.5 0 0 0-1.5-1.5H3A1.5 1.5 0 0 0 1.5 2.5V9A1.5 1.5 0 0 0 3 10.5h1"/></svg>
-          <svg class="ic-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m2.5 8.5 4 4 7-9"/></svg>
+          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
+          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
         </button>
         <span class="ep-aside">auth</span>
         <div class="ep-body">
@@ -990,8 +1004,9 @@ curl "https://tokens.lkwplus.com/api/graph?year=2026"</code></pre>
         request's <code>Origin</code> — a per-origin variant would poison the HTTP cache.
       </li>
       <li>
-        Verify locally with <code>npm run types &amp;&amp; npx tsc --noEmit</code>; run against a
-        real CLI with <code>TOKENS_API_URL=http://localhost:8787 tokens submit</code>.
+        Verify locally with <code>npm run check</code> (types, typecheck, vitest — the same
+        gate CI and the deploy build run); exercise it against a real CLI with
+        <code>TOKENS_API_URL=http://localhost:8787 tokens submit</code>.
       </li>
     </ul>
   </section>

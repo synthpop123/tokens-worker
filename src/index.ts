@@ -1,39 +1,26 @@
 /**
  * tokens-usage — self-hosted backend for the `tokens` CLI (missuo/tokens).
  *
- * Write path implements the official server's submission contract and merge
- * semantics (per-device, per-day, per-client replace with regression guard,
- * parser-revision floors, and authoritative clientManifest coverage). Read
- * path exposes the full usage matrix — (device, date, client, model,
- * provider) x (input, output, cacheRead, cacheWrite, reasoning, messages,
- * cost) — through filterable aggregation endpoints.
+ * The write path implements the official server's submission contract and
+ * merge semantics (per-device, per-day, per-client replace with regression
+ * guard, parser-revision floors, authoritative clientManifest coverage).
+ * The read path exposes the full usage matrix — (device, date, client,
+ * model, provider) x (input, output, cacheRead, cacheWrite, reasoning,
+ * messages, cost) — through filterable aggregation endpoints. The route
+ * table below is the index; each handler module documents its own contract.
  *
- * CLI-facing:
- *   POST   /api/submit                  tokens submit / serve / autosubmit (auth)
- *   DELETE /api/settings/submitted-data tokens delete-submitted-data (auth)
- *   GET    /api/auth/token              tokens login --token (auth)
- *   GET    /api/me/stats                TUI remote tab (auth; exposes device ids)
+ * Reads are public (it is just usage data) and open to any origin;
+ * internal device ids are never exposed. Writes need the bearer token.
  *
- * Read side — public, it is just usage data (open CORS; internal device
- * ids are never exposed):
- *   GET /api/site — precomposed dashboard view for lkwplus.com/tokens,
- *       served straight from KV (rewritten on every accepted submission)
- *       with no-cache + ETag, so browsers revalidate instead of guessing
- *   GET /api/stats, /api/timeseries, /api/breakdown, /api/graph,
- *       /api/meta, /api/devices, /api/submissions, /api/health
- *       (5-minute browser cache)
+ * Every accepted submission refreshes the precomposed /api/site payload in
+ * KV and, once per Asia/Shanghai day, exports all tables to R2 — no cron
+ * needed, submissions are the only write event and devices report every
+ * 30 minutes.
  *
- * Every accepted submission refreshes the precomposed /api/site payload
- * in KV and, once per Asia/Shanghai day, exports all tables to R2
- * (backup/YYYY-MM-DD.json) — no cron needed, submissions are the only
- * write event and devices report every 30 minutes.
- *
- * The homepage (architecture + API reference) is a static asset:
- * public/index.html, served by Workers Static Assets before this router
- * runs — "/" never reaches the Worker.
- *
- * Not implemented: the browser-based GitHub OAuth device flow
- * (POST /api/auth/device[/poll]); use `tokens login --token` instead.
+ * `/` serves the static homepage (public/index.html) through Workers Static
+ * Assets, which matches before this router runs. Not implemented: the
+ * browser GitHub OAuth device flow (POST /api/auth/device[/poll]); use
+ * `tokens login --token` instead.
  */
 
 import type { Env } from "./http";
@@ -52,63 +39,66 @@ import {
 
 export type { Env };
 
-/** Endpoints that only accept one non-GET method, for 405 responses. */
-const METHOD_FOR: Record<string, string> = {
-  "/api/submit": "POST",
-  "/api/settings/submitted-data": "DELETE",
-};
+type Handler = (
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext
+) => Response | Promise<Response>;
+
+/**
+ * "METHOD /path" -> handler. One table, so a known path with the wrong
+ * method answers 405 with the methods it does take instead of a misleading
+ * 404. A Map, not an object: the key comes from the request, and a plain
+ * object would resolve `constructor` off Object.prototype.
+ */
+const ROUTES = new Map<string, Handler>([
+  // CLI-facing (bearer token; see submit.ts).
+  ["POST /api/submit", handleSubmit],
+  ["DELETE /api/settings/submitted-data", handleDeleteSubmittedData],
+  ["GET /api/auth/token", handleAuthToken],
+  ["GET /api/me/stats", handleMeStats],
+  // Public reads: the precomposed dashboard view (site.ts) and the
+  // filterable aggregation endpoints (read.ts).
+  ["GET /api/site", handleSite],
+  ["GET /api/stats", handleStats],
+  ["GET /api/timeseries", handleTimeseries],
+  ["GET /api/breakdown", handleBreakdown],
+  ["GET /api/graph", handleGraph],
+  ["GET /api/meta", handleMeta],
+  ["GET /api/devices", handleDevices],
+  ["GET /api/submissions", handleSubmissions],
+  ["GET /api/health", () => json({ service: "tokens-usage", ok: true }, 200, CORS_HEADERS)],
+]);
+
+/** Methods a known path accepts — drives the 405 and its Allow header. */
+function allowedMethods(pathname: string): string[] {
+  const allowed: string[] = [];
+  for (const route of ROUTES.keys()) {
+    const [method, path] = route.split(" ");
+    if (path === pathname) allowed.push(method);
+  }
+  return allowed;
+}
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
-    const { pathname } = url;
-    const method = request.method;
-
-    if (method === "OPTIONS") {
+  fetch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
+    if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
 
-    if (method === "POST" && pathname === "/api/submit") {
-      return handleSubmit(request, env, ctx);
-    }
-    if (method === "DELETE" && pathname === "/api/settings/submitted-data") {
-      return handleDeleteSubmittedData(request, env);
-    }
+    const { pathname } = new URL(request.url);
+    const handler = ROUTES.get(`${request.method} ${pathname}`);
+    if (handler) return handler(request, env, ctx);
 
-    if (method === "GET") {
-      switch (pathname) {
-        case "/api/site":
-          return handleSite(request, env, ctx);
-        case "/api/stats":
-          return handleStats(request, env);
-        case "/api/timeseries":
-          return handleTimeseries(request, env);
-        case "/api/breakdown":
-          return handleBreakdown(request, env);
-        case "/api/graph":
-          return handleGraph(request, env);
-        case "/api/meta":
-          return handleMeta(request, env);
-        case "/api/devices":
-          return handleDevices(request, env);
-        case "/api/submissions":
-          return handleSubmissions(request, env);
-        case "/api/me/stats":
-          return handleMeStats(request, env);
-        case "/api/auth/token":
-          return handleAuthToken(request, env);
-        case "/":
-        case "/api/health":
-          return json({ service: "tokens-usage", ok: true });
-      }
+    // Routing errors carry CORS for the same reason read errors do: a
+    // browser must be able to read what went wrong.
+    const allow = allowedMethods(pathname).join(", ");
+    if (allow) {
+      return json({ error: `Method not allowed, use ${allow}` }, 405, {
+        Allow: allow,
+        ...CORS_HEADERS,
+      });
     }
-
-    // Known path, wrong method: say which method it wants.
-    const expected = METHOD_FOR[pathname];
-    if (expected && method !== expected) {
-      return json({ error: `Method not allowed, use ${expected}` }, 405, { Allow: expected });
-    }
-
-    return json({ error: "Not found" }, 404);
+    return json({ error: "Not found" }, 404, CORS_HEADERS);
   },
 } satisfies ExportedHandler<Env>;

@@ -3,40 +3,40 @@
  *
  * Everything the dashboard needs, precomposed: totals and per-dimension
  * breakdowns for the four ranges it offers (7 / 30 / 90 days / all time,
- * range boundaries computed here so client and server always agree on
- * "today"), the full daily series split by provider AND by client (for the
- * stacked trend chart's two stacking modes, the weekday profile and the
+ * with the range boundaries computed here so client and server always
+ * agree on "today"), the full daily series split by provider *and* by
+ * client (the trend chart's two stacking modes, the weekday profile, the
  * heatmap) with per-day active time where the CLI reported it, and the
- * device inventory with CLI metadata (version, sessions, active-time
- * totals, MCP servers). Every breakdown row (model / client / provider)
- * also carries its usage span — distinct active days plus first/last date
- * inside the range. Model rows are merged under canonical names and
- * provider ids are canonicalized with the row's model as context — gateway
- * providers (zed.dev, opencode, ...) re-attribute to the model's vendor
- * (see models.ts) — before any aggregation, so the daily provider slices
- * agree with the provider breakdown.
- * "Active" days count messages too: early-2025 Cursor logs
- * carry message counts but no token usage, and those days really were
- * active.
+ * device inventory with its CLI metadata. Every breakdown row also carries
+ * its usage span — distinct active days plus first/last date in range.
+ * Model and provider ids are canonicalized (see models.ts) *before* any
+ * aggregation, so the daily provider slices agree with the provider
+ * breakdown. Active days count messages too: early-2025 Cursor logs carry
+ * message counts but no token usage, and those days really were active.
  *
  * Serving path: the payload lives in KV, rewritten by every accepted
- * submission (the only event that changes the data — the account's cron
- * quota is full), so requests never wait on D1 — cold and hot paths alike
- * are a single KV read. Freshness is event-driven, not TTL-guessed:
- * responses carry `Cache-Control: no-cache` plus a strong ETag (SHA-256
- * of the body, computed at composition time and stored in KV metadata),
- * so browsers keep a copy but always revalidate — a ~0-byte 304 while
- * the data is unchanged, the new payload the moment it isn't. The only
- * staleness left is KV's own per-PoP cache (cacheTtl, 30 s). A
- * day-rollover guard recomposes when no device has reported since
- * midnight. Composition itself is one D1 batch of three statements: the
- * per-day usage matrix (a few thousand rows at personal scale), daily
- * activity, and the device inventory; all four ranges are aggregated
- * here in JS.
+ * submission — the only event that changes the data — so cold and hot
+ * requests alike are a single KV read and never wait on D1. Freshness is
+ * event-driven, never TTL-guessed: responses carry `Cache-Control:
+ * no-cache` plus a strong ETag (SHA-256 of the body, computed once at
+ * composition time and stored in KV metadata), so browsers keep a copy but
+ * always revalidate — a ~0-byte 304 while the data is unchanged, the new
+ * payload the moment it isn't. The only staleness left is KV's own per-PoP
+ * cache (cacheTtl, 30 s), plus a day-rollover guard for when no device has
+ * reported since midnight. Composition is one D1 batch of three
+ * statements; all four ranges are then aggregated in JS.
  */
 
 import type { Env } from "./http";
 import { CORS_HEADERS, isoToday } from "./http";
+import {
+  METRICS_SQL,
+  TOKENS_SQL,
+  addMetrics,
+  byTokensDesc,
+  emptyMetrics,
+  type Metrics,
+} from "./metrics";
 import { canonicalModel, canonicalProvider } from "./models";
 
 // The KV key never changes; the schema version rides in the response body
@@ -60,17 +60,6 @@ const RANGES = [
   { key: "quarter", days: 90 },
   { key: "all", days: null },
 ] as const;
-
-interface Metrics {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  reasoning: number;
-  tokens: number;
-  messages: number;
-  cost: number;
-}
 
 interface UsageRow extends Metrics {
   date: string;
@@ -124,50 +113,41 @@ function shiftDays(day: string, delta: number): string {
   return date.toISOString().slice(0, 10);
 }
 
-function emptyMetrics(): Metrics {
-  return {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    reasoning: 0,
-    tokens: 0,
-    messages: 0,
-    cost: 0,
-  };
+/** A breakdown entry accumulates its distinct active dates, serialized as
+ *  a span (days + first/last) once the range is complete. */
+type Entry<T> = Metrics & T & { dates: Set<string> };
+
+/** Fold one usage row into the entry for `key`, creating it on first sight. */
+function fold<T>(map: Map<string, Entry<T>>, key: string, row: UsageRow, id: () => T): Entry<T> {
+  let entry = map.get(key);
+  if (!entry) {
+    entry = { ...emptyMetrics(), ...id(), dates: new Set() } as Entry<T>;
+    map.set(key, entry);
+  }
+  addMetrics(entry, row);
+  entry.dates.add(row.date);
+  return entry;
 }
 
-function addMetrics(target: Metrics, row: Metrics): void {
-  target.input += row.input;
-  target.output += row.output;
-  target.cacheRead += row.cacheRead;
-  target.cacheWrite += row.cacheWrite;
-  target.reasoning += row.reasoning;
-  target.tokens += row.tokens;
-  target.messages += row.messages;
-  target.cost += row.cost;
-}
-
-/** Distinct active dates of one breakdown entry, serialized as a span. */
-interface DateSpan {
-  dates: Set<string>;
-}
-
-function spanOf({ dates }: DateSpan) {
-  const sorted = [...dates].sort();
-  return {
-    days: sorted.length,
-    firstDate: sorted[0] ?? null,
-    lastDate: sorted[sorted.length - 1] ?? null,
-  };
+/** Sort by tokens, then trade the date set for its serialized span. */
+function serializeEntries<T>(map: Map<string, Entry<T>>) {
+  return [...map.values()].sort(byTokensDesc).map(({ dates, ...rest }) => {
+    const sorted = [...dates].sort();
+    return {
+      ...rest,
+      days: sorted.length,
+      firstDate: sorted[0] ?? null,
+      lastDate: sorted[sorted.length - 1] ?? null,
+    };
+  });
 }
 
 /** One range's aggregation state, filled row by row. */
 class RangeAgg {
   totals = emptyMetrics();
-  byModel = new Map<string, Metrics & DateSpan & { model: string; providers: Set<string> }>();
-  byClient = new Map<string, Metrics & DateSpan & { client: string }>();
-  byProvider = new Map<string, Metrics & DateSpan & { provider: string }>();
+  byModel = new Map<string, Entry<{ model: string; providers: Set<string> }>>();
+  byClient = new Map<string, Entry<{ client: string }>>();
+  byProvider = new Map<string, Entry<{ provider: string }>>();
   days = new Map<string, { tokens: number; messages: number }>();
 
   constructor(readonly from: string | null) {}
@@ -175,30 +155,10 @@ class RangeAgg {
   add(row: UsageRow, model: string): void {
     addMetrics(this.totals, row);
 
-    let m = this.byModel.get(model);
-    if (!m) {
-      m = { ...emptyMetrics(), model, providers: new Set(), dates: new Set() };
-      this.byModel.set(model, m);
-    }
-    addMetrics(m, row);
-    m.dates.add(row.date);
-    if (row.provider) m.providers.add(row.provider);
-
-    let c = this.byClient.get(row.client);
-    if (!c) {
-      c = { ...emptyMetrics(), client: row.client, dates: new Set() };
-      this.byClient.set(row.client, c);
-    }
-    addMetrics(c, row);
-    c.dates.add(row.date);
-
-    let p = this.byProvider.get(row.provider);
-    if (!p) {
-      p = { ...emptyMetrics(), provider: row.provider, dates: new Set() };
-      this.byProvider.set(row.provider, p);
-    }
-    addMetrics(p, row);
-    p.dates.add(row.date);
+    const entry = fold(this.byModel, model, row, () => ({ model, providers: new Set<string>() }));
+    if (row.provider) entry.providers.add(row.provider);
+    fold(this.byClient, row.client, row, () => ({ client: row.client }));
+    fold(this.byProvider, row.provider, row, () => ({ provider: row.provider }));
 
     let day = this.days.get(row.date);
     if (!day) {
@@ -215,7 +175,6 @@ class RangeAgg {
     for (const day of this.days.values()) {
       if (day.tokens > 0 || day.messages > 0) activeDays++;
     }
-    const byTokensDesc = (a: Metrics, b: Metrics) => b.tokens - a.tokens;
     return {
       from: this.from,
       totals: {
@@ -224,17 +183,12 @@ class RangeAgg {
         firstDate: dates[0] ?? null,
         lastDate: dates[dates.length - 1] ?? null,
       },
-      byModel: [...this.byModel.values()].sort(byTokensDesc).map(({ providers, dates, ...rest }) => ({
+      byModel: serializeEntries(this.byModel).map(({ providers, ...rest }) => ({
         ...rest,
         providers: [...providers].join(","),
-        ...spanOf({ dates }),
       })),
-      byClient: [...this.byClient.values()]
-        .sort(byTokensDesc)
-        .map(({ dates, ...rest }) => ({ ...rest, ...spanOf({ dates }) })),
-      byProvider: [...this.byProvider.values()]
-        .sort(byTokensDesc)
-        .map(({ dates, ...rest }) => ({ ...rest, ...spanOf({ dates }) })),
+      byClient: serializeEntries(this.byClient),
+      byProvider: serializeEntries(this.byProvider),
     };
   }
 }
@@ -245,12 +199,7 @@ export async function composeSiteBody(env: Env): Promise<string> {
 
   const [usage, activity, deviceRows] = await env.DB.batch([
     env.DB.prepare(
-      `SELECT u.date, u.client, u.model, u.provider,
-              sum(u.input) AS input, sum(u.output) AS output,
-              sum(u.cache_read) AS cacheRead, sum(u.cache_write) AS cacheWrite,
-              sum(u.reasoning) AS reasoning,
-              sum(u.input + u.output + u.cache_read + u.cache_write + u.reasoning) AS tokens,
-              sum(u.messages) AS messages, sum(u.cost) AS cost
+      `SELECT u.date, u.client, u.model, u.provider, ${METRICS_SQL}
        FROM daily_usage u
        GROUP BY u.date, u.client, u.model, u.provider
        ORDER BY u.date`
@@ -267,7 +216,7 @@ export async function composeSiteBody(env: Env): Promise<string> {
               d.max_concurrent_sessions AS maxConcurrent,
               d.mcp_servers AS mcpServers,
               count(DISTINCT u.date) AS activeDays,
-              sum(u.input + u.output + u.cache_read + u.cache_write + u.reasoning) AS tokens,
+              sum(${TOKENS_SQL}) AS tokens,
               sum(u.messages) AS messages,
               sum(u.cost) AS cost
        FROM devices d LEFT JOIN daily_usage u ON u.device_id = d.id

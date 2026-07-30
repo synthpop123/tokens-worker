@@ -2,3 +2,5 @@ node_modules/
 .wrangler/
 .dev.vars
 worker-configuration.d.ts
+# Editor scratch (Cursor writes an empty settings.json on open).
+.cursor/

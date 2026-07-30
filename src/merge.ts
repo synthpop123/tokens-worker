@@ -21,7 +21,12 @@
 
 import type { ClientContribution, DailyContribution, ManifestEntry } from "./payload";
 
-export interface ModelMetrics {
+/**
+ * One stored (model, provider) bucket. Distinct from `Metrics` in
+ * metrics.ts, the aggregate row shape: nothing is stored pre-summed, so
+ * there is no derived `tokens` field here.
+ */
+export interface ModelUsage {
   input: number;
   output: number;
   cacheRead: number;
@@ -34,7 +39,7 @@ export interface ModelMetrics {
 /** modelKey = model + "\u0000" + provider */
 export interface ClientDayData {
   revision: number;
-  models: Map<string, ModelMetrics>;
+  models: Map<string, ModelUsage>;
 }
 
 export type DayState = Map<string, ClientDayData>; // key: client
@@ -52,7 +57,7 @@ export function clientTokens(c: ClientDayData): number {
   return sum;
 }
 
-function addInto(target: ModelMetrics, src: ModelMetrics): void {
+function addInto(target: ModelUsage, src: ModelUsage): void {
   target.input += src.input;
   target.output += src.output;
   target.cacheRead += src.cacheRead;
@@ -68,7 +73,7 @@ export function aggregateIncomingDay(clients: ClientContribution[]): DayState {
   for (const c of clients) {
     const revision = Math.max(1, c.provenance?.schemaVersion ?? 1);
     const key = modelKey(c.modelId, c.providerId ?? "");
-    const metrics: ModelMetrics = {
+    const metrics: ModelUsage = {
       input: c.tokens.input,
       output: c.tokens.output,
       cacheRead: c.tokens.cacheRead,
@@ -123,7 +128,7 @@ export function extractCoverages(entries: ManifestEntry[] | undefined): Coverage
 }
 
 function cloneClientData(c: ClientDayData): ClientDayData {
-  const models = new Map<string, ModelMetrics>();
+  const models = new Map<string, ModelUsage>();
   for (const [k, v] of c.models) models.set(k, { ...v });
   return { revision: c.revision, models };
 }
