@@ -2,9 +2,12 @@
  * GET /api/site — the one-request view backing lkwplus.com/tokens.
  *
  * Everything the dashboard needs, precomposed: totals and per-dimension
- * breakdowns for the four ranges it offers (7 / 30 / 90 days / all time,
- * with the range boundaries computed here so client and server always
- * agree on "today"), the full daily series split by provider *and* by
+ * breakdowns for the five ranges it offers (today / 7 / 30 / 90 days /
+ * all time, with the range boundaries computed here so client and server
+ * always agree on "today" — `day` is the single-day window backing the
+ * dashboard's Today section, and the only place a per-model split of one
+ * calendar day exists; the daily series below carries client and provider
+ * slices but no models), the full daily series split by provider *and* by
  * client (the trend chart's two stacking modes, the weekday profile, the
  * heatmap) with per-day active time where the CLI reported it, and the
  * device inventory with its CLI metadata. Every breakdown row also carries
@@ -24,7 +27,7 @@
  * payload the moment it isn't. The only staleness left is KV's own per-PoP
  * cache (cacheTtl, 30 s), plus a day-rollover guard for when no device has
  * reported since midnight. Composition is one D1 batch of three
- * statements; all four ranges are then aggregated in JS.
+ * statements; all five ranges are then aggregated in JS.
  */
 
 import type { Env } from "./http";
@@ -48,13 +51,14 @@ import { canonicalModel, canonicalProvider } from "./models";
 // /api/site fixture (homepage: src/lib/client/tokens.ts + .test.ts) in
 // lockstep.
 const SITE_KEY = "site";
-export const SITE_VERSION = 5;
+export const SITE_VERSION = 6;
 /** How long a PoP may serve its local copy of the KV entry before
  *  re-checking central storage — the global worst-case staleness after
  *  a submission rewrites the payload (30 is the API's minimum). */
 const KV_CACHE_TTL = 30;
 
 const RANGES = [
+  { key: "day", days: 1 },
   { key: "week", days: 7 },
   { key: "month", days: 30 },
   { key: "quarter", days: 90 },
