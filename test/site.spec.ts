@@ -10,12 +10,13 @@
 
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
+import { isoToday } from "../src/http";
 import { SITE_VERSION } from "../src/site";
 import { call, reset, submissionPayload, submit } from "./helpers";
 
 beforeEach(() => reset());
 
-const RANGE_KEYS = ["week", "month", "quarter", "all"] as const;
+const RANGE_KEYS = ["day", "week", "month", "quarter", "all"] as const;
 const METRIC_KEYS = [
   "input", "output", "cacheRead", "cacheWrite", "reasoning", "tokens", "messages", "cost",
 ] as const;
@@ -126,6 +127,36 @@ describe("GET /api/site", () => {
         mcpServers: ["context7"],
       }),
     ]);
+  });
+
+  it("scopes the day range to today, models included", async () => {
+    // The dashboard's Today section is the only consumer of a per-model
+    // split of a single calendar day — the daily series carries client and
+    // provider slices but no models — so the window has to be exactly
+    // today in the collector's timezone, not "the last 24 hours".
+    const today = isoToday();
+    const yesterday = new Date(`${today}T12:00:00Z`);
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    const eve = yesterday.toISOString().slice(0, 10);
+
+    const payload = submissionPayload();
+    payload.meta!.dateRange = { start: eve, end: today };
+    payload.contributions![0].date = eve;
+    payload.contributions![1].date = today;
+    payload.contributions![1].clients![0].modelId = "gpt-5.5-codex";
+    payload.contributions![1].clients![0].providerId = "openai";
+    await submit(payload);
+
+    const site = (await (await call("/api/site")).json()) as Record<string, any>;
+    expectSiteContract(site);
+    const day = site.ranges.day;
+    expect(day.from).toBe(today);
+    expect(day.totals).toMatchObject({ tokens: 500, activeDays: 1, firstDate: today, lastDate: today });
+    expect(day.byModel).toEqual([expect.objectContaining({ model: "gpt-5.5-codex", tokens: 500 })]);
+    expect(day.byClient).toEqual([expect.objectContaining({ client: "claude" })]);
+    expect(day.byProvider).toEqual([expect.objectContaining({ provider: "openai" })]);
+    // The wider ranges still see both days.
+    expect(site.ranges.week.totals.tokens).toBe(1500);
   });
 
   it("serializes absent device metadata as nulls, not gaps", async () => {
