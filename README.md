@@ -71,7 +71,7 @@ Every aggregate row carries the full metric set: `input`, `output`, `cacheRead`,
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/site` | Precomposed dashboard view, one request for the whole page: per-range (`day`/`week`/`month`/`quarter`/`all`, where `day` is today in Asia/Shanghai — it backs the dashboard's Today section and is the only per-model split of a single day) totals + breakdowns (every row carries its usage span — `days`, `firstDate`, `lastDate`), the full daily series split **by provider and by client** with per-day `active` time, and the device inventory incl. CLI version, sessions, active-time metrics and MCP servers. No filters; served from KV. The body carries `schemaVersion` — see [Cross-repo contract](#cross-repo-contract) |
+| `GET /api/site` | Precomposed dashboard view, one request for the whole page: per-range (`day`/`week`/`month`/`quarter`/`all`, where `day` is today in Asia/Shanghai — it backs the dashboard's Today section and is the only per-model split of a single day) totals + breakdowns (every row carries its usage span — `days`, `firstDate`, `lastDate`), the full daily series split **by provider and by client** with per-day `active` time, and the device inventory incl. CLI version, sessions, active-time metrics and MCP servers. The whole payload is a view **as of today**: submissions may carry dates up to two days ahead (clock skew, timezones east of Asia/Shanghai), and those rows stay in D1 until their own day arrives rather than landing in a window that ends today. No filters; served from KV. The body carries `schemaVersion` — see [Cross-repo contract](#cross-repo-contract) |
 | `GET /api/stats` | Overview: `totals` (+ `activeDays`, `firstDate`, `lastDate`), `daily`, `byClient`, `byModel` (canonical, with `providers`), `byProvider`, `byDevice` (by name) |
 | `GET /api/timeseries?interval=day\|week\|month\|year&group=none\|client\|model\|provider\|device` | `{series: [{period, key?, ...metrics}]}`, optionally split by one dimension — e.g. `interval=day&group=client` powers stacked area charts |
 | `GET /api/breakdown?by=client,model&limit=` | Arbitrary multi-dimension rollup; `by` is any combination of `client`, `model`, `provider`, `device`, `date`, `month`, `year` (mirrors the CLI's `--group-by`); `limit` 1–10000 |
@@ -97,6 +97,8 @@ curl "https://tokens.lkwplus.com/api/graph?year=2026"
 ### Cross-repo contract
 
 `/api/site` is versioned: the body carries `schemaVersion` (`SITE_VERSION` in `src/site.ts`), which the homepage (`../homepage/src/lib/client/tokens.ts`, `SITE_SCHEMA_VERSION`) validates strictly and keys its cache by, so a stale cache or a mid-deploy mismatch falls back to a refetch instead of a renderer crash. Bump both together on any shape change and refresh the homepage's committed fixture (`src/lib/client/tokens.site-fixture.json`). The producer shape is pinned by `test/site.spec.ts`, the consumer by the homepage's `tokens.test.ts`.
+
+The two repos deploy independently, so a bump has no atomic moment — whichever ships first talks to the other side's previous version for a minute or two, and visitors without a session cache see the fallback for that window. To close it, widen the consumer's `ACCEPTED_SCHEMA_VERSIONS` to both versions and **ship the homepage first**, then this Worker, then prune the old entry. That only works for shapes the older reader survives; for a genuinely breaking change, the fallback window is the price.
 
 ## Security & privacy
 

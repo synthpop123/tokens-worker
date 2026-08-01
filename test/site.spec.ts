@@ -159,6 +159,37 @@ describe("GET /api/site", () => {
     expect(site.ranges.week.totals.tokens).toBe(1500);
   });
 
+  it("stores dates past today but keeps them out of the payload", async () => {
+    // Validation allows submissions up to two days ahead (clock skew, and
+    // devices east of Asia/Shanghai are genuinely a day ahead for part of
+    // the evening). The dashboard has nowhere to put such a row: every
+    // window ends today, and Today's active time is matched by exact
+    // date — so the payload is composed as of today and the row waits.
+    const today = isoToday();
+    const tomorrow = new Date(`${today}T12:00:00Z`);
+    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    const ahead = tomorrow.toISOString().slice(0, 10);
+
+    const payload = submissionPayload();
+    payload.meta!.dateRange = { start: today, end: ahead };
+    payload.contributions![0].date = today;
+    payload.contributions![1].date = ahead;
+    payload.contributions![1].activeTimeMs = 1_800_000;
+    const accepted = await submit(payload);
+    expect(accepted.status).toBe(200);
+
+    const site = (await (await call("/api/site")).json()) as Record<string, any>;
+    expectSiteContract(site);
+    expect(site.daily.map((day: any) => day.date)).toEqual([today]);
+    for (const key of RANGE_KEYS) {
+      expect(site.ranges[key].totals.tokens, `ranges.${key}`).toBe(1000);
+      expect(site.ranges[key].totals.lastDate, `ranges.${key}`).toBe(today);
+    }
+    // The device inventory is bounded by the same date, or the all-time
+    // totals and the per-device totals would disagree.
+    expect(site.devices[0]).toMatchObject({ tokens: 1000, activeDays: 1 });
+  });
+
   it("serializes absent device metadata as nulls, not gaps", async () => {
     await submit();
     const bare = submissionPayload();
