@@ -34,8 +34,16 @@ push: the Workers Builds log prints the executed build command, so a
   (`../homepage/src/lib/client/tokens.ts`, `SITE_SCHEMA_VERSION`)
   validates strictly and keys its sessionStorage cache by. Bump both
   together on any shape change and refresh the homepage's committed
-  fixture (`src/lib/client/tokens.site-fixture.json`); the producer shape
-  is pinned by `test/site.spec.ts`, the consumer by its `tokens.test.ts`.
+  fixture (`src/lib/client/tokens.site-fixture.json`) by capturing the
+  live endpoint, never by hand; the producer shape is pinned by
+  `test/site.spec.ts`, the consumer by its `tokens.test.ts`. Independent
+  deploys mean a bump is never atomic — see the README's cross-repo
+  section for the consumer-first rollout that closes the window.
+- The `/api/site` body is composed **as of today** (Asia/Shanghai):
+  submissions may legitimately carry dates up to two days ahead, but
+  every window the dashboard draws ends today, so all three composition
+  statements are bounded by `u.date <= today`. Keep new ones bounded
+  too, or the Today section will contradict its own active-time card.
 - Migrations are append-only. D1 records applied migrations by filename,
   and `0003_rebuild.sql` starts with `DROP TABLE`, so renaming or
   collapsing the existing files would re-run a destructive migration

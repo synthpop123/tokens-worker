@@ -17,6 +17,17 @@
  * breakdown. Active days count messages too: early-2025 Cursor logs carry
  * message counts but no token usage, and those days really were active.
  *
+ * The whole payload is a view *as of today*: every statement below is
+ * bounded by the collector's current calendar day. Submissions may
+ * legitimately carry dates up to two days ahead (payload.ts keeps the
+ * official clock-skew allowance, and a device in a timezone east of
+ * Asia/Shanghai really is a day ahead for part of the evening), but a
+ * row dated tomorrow has nowhere to go in a dashboard whose windows all
+ * end today — left unbounded it would land in "Today" next to an active
+ * time that is filtered by exact date, and the section would contradict
+ * itself. Such rows stay in D1 and join the payload when their day
+ * arrives; the day-rollover guard below guarantees the recomposition.
+ *
  * Serving path: the payload lives in KV, rewritten by every accepted
  * submission — the only event that changes the data — so cold and hot
  * requests alike are a single KV read and never wait on D1. Freshness is
@@ -212,17 +223,24 @@ class RangeAgg {
 export async function composeSiteBody(env: Env): Promise<string> {
   const today = isoToday();
 
+  // `u.date <= ?1` on all three statements is the one place the
+  // as-of-today bound is enforced (see the header): ranges, the daily
+  // series and the device inventory then agree by construction, without
+  // every aggregation having to remember an upper bound. On the device
+  // join it belongs in the ON clause — a WHERE would turn the LEFT JOIN
+  // inner and drop devices that have only reported future-dated rows.
   const [usage, activity, deviceRows] = await env.DB.batch([
     env.DB.prepare(
       `SELECT u.date, u.client, u.model, u.provider, ${METRICS_SQL}
        FROM daily_usage u
+       WHERE u.date <= ?1
        GROUP BY u.date, u.client, u.model, u.provider
        ORDER BY u.date`
-    ),
+    ).bind(today),
     env.DB.prepare(
       `SELECT u.date, sum(u.active_time_ms) AS active
-       FROM daily_activity u GROUP BY u.date ORDER BY u.date`
-    ),
+       FROM daily_activity u WHERE u.date <= ?1 GROUP BY u.date ORDER BY u.date`
+    ).bind(today),
     env.DB.prepare(
       `SELECT d.name, d.first_seen AS firstSeen, d.last_seen AS lastSeen,
               d.cli_version AS cliVersion, d.session_count AS sessions,
@@ -234,9 +252,10 @@ export async function composeSiteBody(env: Env): Promise<string> {
               sum(${TOKENS_SQL}) AS tokens,
               sum(u.messages) AS messages,
               sum(u.cost) AS cost
-       FROM devices d LEFT JOIN daily_usage u ON u.device_id = d.id
+       FROM devices d LEFT JOIN daily_usage u
+              ON u.device_id = d.id AND u.date <= ?1
        GROUP BY d.id ORDER BY d.last_seen DESC`
-    ),
+    ).bind(today),
   ]);
 
   const aggs = RANGES.map(
@@ -262,6 +281,8 @@ export async function composeSiteBody(env: Env): Promise<string> {
     const model = canonicalModel(row.model);
     row.provider = canonicalProvider(row.provider, row.model);
     for (const agg of aggs) {
+      // Only the lower bound is checked here: every range ends today,
+      // and the query already stops there.
       if (agg.from === null || row.date >= agg.from) agg.add(row, model);
     }
     const day = dayFor(row.date);
