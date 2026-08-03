@@ -89,7 +89,14 @@ const PROVIDER_ALIASES = new Map<string, string>([
  * or nothing at all — not a model vendor. Rows carrying these get
  * re-attributed by model name when the caller can supply one.
  */
-const GATEWAY_PROVIDERS = new Set(["cursor", "opencode", "zed.dev", "unknown", ""]);
+const GATEWAY_PROVIDERS = new Set([
+  "cursor",
+  "opencode",
+  "opencode-go",
+  "zed.dev",
+  "unknown",
+  "",
+]);
 
 /** True when haystack contains needle bounded by non-alphanumerics. */
 function containsDelimited(haystack: string, needle: string): boolean {
@@ -149,7 +156,8 @@ export function inferProviderFromModel(model: string): string | null {
 /**
  * Canonical provider id: alias spellings collapse into the vendor, and —
  * when the caller supplies the row's model — gateway ids (zed.dev,
- * opencode, cursor, unknown) are re-attributed to the model's vendor.
+ * opencode, opencode-go, cursor, unknown) are re-attributed to the
+ * model's vendor.
  * Without model context (filter parsing, already-aggregated ids) gateway
  * ids pass through unchanged.
  */

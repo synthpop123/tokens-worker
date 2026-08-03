@@ -56,6 +56,7 @@ describe("canonicalProvider", () => {
     expect(canonicalProvider("zed.dev", "gpt-5.5")).toBe("openai");
     expect(canonicalProvider("opencode", "glm-4.7")).toBe("zai");
     expect(canonicalProvider("opencode", "kimi-k2.5")).toBe("moonshotai");
+    expect(canonicalProvider("opencode-go", "deepseek-v4-flash")).toBe("deepseek");
     expect(canonicalProvider("unknown", "gemini-3-pro")).toBe("google");
     expect(canonicalProvider("", "grok-4.5")).toBe("xai");
     expect(canonicalProvider("cursor", "cursor-grok-4.5")).toBe("xai");
@@ -63,6 +64,7 @@ describe("canonicalProvider", () => {
 
   it("keeps gateway ids for models the rules cannot place", () => {
     expect(canonicalProvider("opencode", "big-pickle")).toBe("opencode");
+    expect(canonicalProvider("opencode-go", "big-pickle")).toBe("opencode-go");
     expect(canonicalProvider("cursor", "composer-2.5")).toBe("cursor");
     expect(canonicalProvider("cursor", "auto")).toBe("cursor");
     expect(canonicalProvider("cursor", "premium-tool-call")).toBe("cursor");
@@ -77,6 +79,7 @@ describe("canonicalProvider", () => {
   it("passes gateway ids through unchanged without model context", () => {
     expect(canonicalProvider("zed.dev")).toBe("zed.dev");
     expect(canonicalProvider("opencode")).toBe("opencode");
+    expect(canonicalProvider("opencode-go")).toBe("opencode-go");
   });
 });
 

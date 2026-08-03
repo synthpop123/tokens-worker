@@ -229,10 +229,13 @@ describe("read API query contract", () => {
   });
 
   it("re-attributes gateway provider rows to model vendors on aggregates", async () => {
-    // Day 2 rewritten as gateway-provider rows: a Zed-hosted Claude model
-    // and GLM through OpenCode's zen gateway.
+    // Day 2 rewritten as gateway-provider rows: a Zed-hosted Claude model,
+    // GLM through OpenCode zen, and DeepSeek through pi's OpenCode Go.
     const payload = submissionPayload();
-    payload.summary!.clients = ["cursor", "zed", "opencode"];
+    payload.summary!.totalTokens = 1600;
+    payload.summary!.totalCost = 0.55;
+    payload.summary!.clients = ["cursor", "zed", "opencode", "pi"];
+    payload.contributions![1].totals = { tokens: 600, cost: 0.35, messages: 5 };
     payload.contributions![1].clients = [
       {
         client: "zed",
@@ -252,6 +255,15 @@ describe("read API query contract", () => {
         messages: 1,
         provenance: { schemaVersion: 3, messageCount: 1, modelCount: 1 },
       },
+      {
+        client: "pi",
+        modelId: "deepseek-v4-flash",
+        providerId: "opencode-go",
+        tokens: { input: 50, output: 25, cacheRead: 10, cacheWrite: 10, reasoning: 5 },
+        cost: 0.05,
+        messages: 1,
+        provenance: { schemaVersion: 3, messageCount: 1, modelCount: 1 },
+      },
     ];
     await submit(payload);
 
@@ -261,10 +273,12 @@ describe("read API query contract", () => {
     expect(stats.byProvider).toEqual([
       expect.objectContaining({ provider: "anthropic", tokens: 1300 }),
       expect.objectContaining({ provider: "zai", tokens: 200 }),
+      expect.objectContaining({ provider: "deepseek", tokens: 100 }),
     ]);
     expect(stats.byModel).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ model: "glm-4.7", providers: "zai" }),
+        expect.objectContaining({ model: "deepseek-v4-flash", providers: "deepseek" }),
         expect.objectContaining({ model: "claude-sonnet-5", providers: "anthropic" }),
       ])
     );
@@ -276,6 +290,7 @@ describe("read API query contract", () => {
     expect(series.series).toEqual([
       expect.objectContaining({ period: "2026-07", key: "anthropic", tokens: 1300 }),
       expect.objectContaining({ period: "2026-07", key: "zai", tokens: 200 }),
+      expect.objectContaining({ period: "2026-07", key: "deepseek", tokens: 100 }),
     ]);
     const breakdown = (await (
       await call("/api/breakdown?by=provider")
@@ -283,6 +298,7 @@ describe("read API query contract", () => {
     expect(breakdown.rows).toEqual([
       expect.objectContaining({ provider: "anthropic", tokens: 1300 }),
       expect.objectContaining({ provider: "zai", tokens: 200 }),
+      expect.objectContaining({ provider: "deepseek", tokens: 100 }),
     ]);
     expect(breakdown.rows[0]).not.toHaveProperty("model");
 
@@ -291,22 +307,31 @@ describe("read API query contract", () => {
     expect(site.ranges.all.byProvider).toEqual([
       expect.objectContaining({ provider: "anthropic", tokens: 1300 }),
       expect.objectContaining({ provider: "zai", tokens: 200 }),
+      expect.objectContaining({ provider: "deepseek", tokens: 100 }),
     ]);
     expect(site.daily[1].providers).toEqual({
       anthropic: expect.objectContaining({ tokens: 300 }),
       zai: expect.objectContaining({ tokens: 200 }),
+      deepseek: expect.objectContaining({ tokens: 100 }),
     });
 
     // Raw ids stay the filter vocabulary: /api/meta lists the gateway
     // spellings, and provider= matches them.
     const meta = (await (await call("/api/meta")).json()) as Record<string, any>;
-    expect(meta.providers).toEqual(["anthropic", "opencode", "zed.dev"]);
+    expect(meta.providers).toEqual(["anthropic", "opencode", "opencode-go", "zed.dev"]);
     const filtered = (await (
       await call("/api/stats?provider=zed.dev")
     ).json()) as Record<string, any>;
     expect(filtered.totals.tokens).toBe(300);
     expect(filtered.byProvider).toEqual([
       expect.objectContaining({ provider: "anthropic", tokens: 300 }),
+    ]);
+    const goFiltered = (await (
+      await call("/api/stats?provider=opencode-go")
+    ).json()) as Record<string, any>;
+    expect(goFiltered.totals.tokens).toBe(100);
+    expect(goFiltered.byProvider).toEqual([
+      expect.objectContaining({ provider: "deepseek", tokens: 100 }),
     ]);
   });
 
