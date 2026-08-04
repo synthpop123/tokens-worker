@@ -62,7 +62,7 @@ import { canonicalModel, canonicalProvider } from "./models";
 // /api/site fixture (homepage: src/lib/client/tokens.ts + .test.ts) in
 // lockstep.
 const SITE_KEY = "site";
-export const SITE_VERSION = 6;
+export const SITE_VERSION = 7;
 /** How long a PoP may serve its local copy of the KV entry before
  *  re-checking central storage — the global worst-case staleness after
  *  a submission rewrites the payload (30 is the API's minimum). */

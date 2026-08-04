@@ -38,6 +38,11 @@ describe("canonicalModel", () => {
     expect(canonicalModel("grok-4.5-build-free")).toBe("grok-4.5");
   });
 
+  it("preserves Qwen product tiers that look like effort suffixes", () => {
+    expect(canonicalModel("qwen3.8-plus")).toBe("qwen3.8-plus");
+    expect(canonicalModel("qwen3.8-max")).toBe("qwen3.8-max");
+  });
+
   it("leaves unknown names alone", () => {
     expect(canonicalModel("big-pickle")).toBe("big-pickle");
     expect(canonicalModel("unknown")).toBe("unknown");
@@ -47,6 +52,7 @@ describe("canonicalModel", () => {
 describe("canonicalProvider", () => {
   it("merges subscription-auth spellings into the vendor", () => {
     expect(canonicalProvider("openai-codex")).toBe("openai");
+    expect(canonicalProvider("qwen")).toBe("alibaba");
     expect(canonicalProvider("anthropic")).toBe("anthropic");
     expect(canonicalProvider("")).toBe("");
   });
@@ -57,6 +63,9 @@ describe("canonicalProvider", () => {
     expect(canonicalProvider("opencode", "glm-4.7")).toBe("zai");
     expect(canonicalProvider("opencode", "kimi-k2.5")).toBe("moonshotai");
     expect(canonicalProvider("opencode-go", "deepseek-v4-flash")).toBe("deepseek");
+    expect(canonicalProvider("opencode_go", "deepseek-v4-flash")).toBe("deepseek");
+    expect(canonicalProvider("opencode_go", "gpt-5.6-luna")).toBe("openai");
+    expect(canonicalProvider("opencode_go", "qwen3.8-max")).toBe("alibaba");
     expect(canonicalProvider("unknown", "gemini-3-pro")).toBe("google");
     expect(canonicalProvider("", "grok-4.5")).toBe("xai");
     expect(canonicalProvider("cursor", "cursor-grok-4.5")).toBe("xai");
@@ -89,7 +98,7 @@ describe("inferProviderFromModel", () => {
     expect(inferProviderFromModel("fable-preview")).toBe("anthropic");
     expect(inferProviderFromModel("o3-mini")).toBe("openai");
     expect(inferProviderFromModel("deepseek-v3.2")).toBe("deepseek");
-    expect(inferProviderFromModel("qwen3-coder")).toBe("qwen");
+    expect(inferProviderFromModel("qwen3-coder")).toBe("alibaba");
     expect(inferProviderFromModel("mimo-v2.5")).toBe("xiaomi");
   });
 

@@ -24,10 +24,11 @@
  *
  * Maintenance: when a new model shows up with a spelling the rules get
  * wrong, add an ALIASES entry. Mapping a raw name to itself pins it and
- * skips the suffix rules entirely (e.g. a model genuinely named "*-max").
+ * skips the suffix rules entirely. Family-wide product tiers that resemble
+ * effort suffixes belong in PRODUCT_TIER_MODELS instead (Qwen Plus/Max).
  * When a new vendor's models appear behind a gateway provider, extend
- * inferProviderFromModel (keep it in step with the CLI's
- * provider_identity.rs).
+ * inferProviderFromModel (keep its family recognition in step with the CLI's
+ * provider_identity.rs; this Worker normalizes the final vendor ids).
  */
 
 import { METRIC_KEYS, type Metrics } from "./metrics";
@@ -68,9 +69,12 @@ const ALIASES = new Map<string, string>([
   ["cursor-grok-4.5", "grok-4.5"],
 ]);
 
+const PRODUCT_TIER_MODELS = /^qwen.*-(?:plus|max)$/i;
+
 export function canonicalModel(raw: string): string {
   const pinned = ALIASES.get(raw);
   if (pinned) return pinned;
+  if (PRODUCT_TIER_MODELS.test(raw)) return raw;
   let name = raw;
   for (let prev = ""; prev !== name; ) {
     prev = name;
@@ -82,6 +86,10 @@ export function canonicalModel(raw: string): string {
 const PROVIDER_ALIASES = new Map<string, string>([
   // pi's OAuth-through-ChatGPT provider — OpenAI's Codex subscription.
   ["openai-codex", "openai"],
+  // Qwen is Alibaba's model family; direct Qwen CLI rows use this id.
+  ["qwen", "alibaba"],
+  // Some OpenCode parsers spell the OpenCode Go gateway with an underscore.
+  ["opencode_go", "opencode-go"],
 ]);
 
 /**
@@ -111,11 +119,10 @@ function containsDelimited(haystack: string, needle: string): boolean {
 }
 
 /**
- * Vendor inference from a model name — a port of the CLI's
- * `provider_identity::inferred_provider_from_model` (its cursor parser
- * attributes Cursor's provider-less usage.csv rows with exactly these
- * rules, so gateway rows re-attributed here agree with cursor rows).
- * Bare substring checks are deliberate (spellings vary per client); the
+ * Vendor inference from a model name — the family checks are a port of the
+ * CLI's `provider_identity::inferred_provider_from_model`; returned ids use
+ * this Worker's canonical model-vendor vocabulary (for example Qwen →
+ * Alibaba). Bare substring checks are deliberate (spellings vary per client); the
  * delimited checks guard short tokens against matches inside other words.
  */
 export function inferProviderFromModel(model: string): string | null {
@@ -145,7 +152,7 @@ export function inferProviderFromModel(model: string): string | null {
   if (m.includes("minimax")) return "minimax";
   if (m.includes("mistral") || m.includes("mixtral")) return "mistral";
   if (m.includes("llama") || containsDelimited(m, "meta")) return "meta";
-  if (m.includes("qwen")) return "qwen";
+  if (m.includes("qwen")) return "alibaba";
   if (m.includes("fugu")) return "sakana";
   if (containsDelimited(m, "kimi")) return "moonshotai";
   if (containsDelimited(m, "mimo")) return "xiaomi";

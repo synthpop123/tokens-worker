@@ -795,11 +795,13 @@
       than silently ignored. Every aggregate
       row carries the full metric set — the five token categories, their sum, messages and cost.
       Aggregates merge model and provider spellings under canonical ids
-      (<code>claude-fable-5-thinking-max</code> → <code>claude-fable-5</code>,
+      (<code>claude-fable-5-thinking-max</code> → <code>claude-fable-5</code>, while
+      Qwen's real <code>-plus</code>/<code>-max</code> product tiers stay distinct;
       <code>openai-codex</code> → <code>openai</code>), and providers mean
       <em>model vendors</em>: rows whose client reported its own gateway as the
-      provider (<code>zed.dev</code>, <code>opencode</code>, <code>opencode-go</code>) are re-attributed by
-      model name (<code>deepseek-v4-flash</code> → <code>deepseek</code>), with models the rules
+      provider (<code>zed.dev</code>, <code>opencode</code>, <code>opencode-go</code>,
+      <code>opencode_go</code>) are re-attributed by model name
+      (<code>qwen3.8-max</code> → <code>alibaba</code>), with models the rules
       can't place staying under the gateway id;
       <code>/api/graph</code> keeps raw ids as the full-fidelity export.
     </p>
