@@ -803,11 +803,13 @@
       <code>claude-fable-5</code>, while Qwen's real <code>-plus</code>/<code>-max</code> product
       tiers stay distinct; <code>openai-codex</code> → <code>openai</code>), which is what makes
       the per-day model slices agree with the model breakdown. Providers mean
-      <em>model vendors</em>: rows whose client reported its own gateway as the
-      provider (<code>zed.dev</code>, <code>opencode</code>, <code>opencode-go</code>,
-      <code>opencode_go</code>) are re-attributed by model name
-      (<code>qwen3.8-max</code> → <code>alibaba</code>), with models the rules
-      can't place staying under the gateway id. D1 keeps the raw spellings, so none of it is lossy.
+      <em>model vendors</em>: a provider id that names no vendor is re-attributed by
+      model name (<code>qwen3.8-max</code> → <code>alibaba</code>) — either the client's
+      own gateway (<code>zed.dev</code>, <code>opencode</code>, <code>opencode-go</code>,
+      <code>opencode_go</code>) or anything reported by a client that runs no models of
+      its own, where <code>openai</code> only ever meant "OpenAI-compatible endpoint".
+      Models the rules can't place stay under the reported id. D1 keeps the raw spellings,
+      so none of it is lossy.
     </p>
 
     <ol class="eps">
