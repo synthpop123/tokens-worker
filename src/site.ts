@@ -12,33 +12,15 @@
  * reported it, and the device inventory with its CLI metadata. Every
  * breakdown row also carries its usage span — distinct active days plus
  * first/last date in range.
+ *
  * Model and provider ids are canonicalized (see models.ts) *before* any
  * aggregation, so the daily provider slices agree with the provider
  * breakdown. Active days count messages too: early-2025 Cursor logs carry
  * message counts but no token usage, and those days really were active.
  *
- * The whole payload is a view *as of today*: every statement below is
- * bounded by the collector's current calendar day. Submissions may
- * legitimately carry dates up to two days ahead (payload.ts keeps the
- * official clock-skew allowance, and a device in a timezone east of
- * Asia/Shanghai really is a day ahead for part of the evening), but a
- * row dated tomorrow has nowhere to go in a dashboard whose windows all
- * end today — left unbounded it would land in "Today" next to an active
- * time that is filtered by exact date, and the section would contradict
- * itself. Such rows stay in D1 and join the payload when their day
- * arrives; the day-rollover guard below guarantees the recomposition.
- *
- * Serving path: the payload lives in KV, rewritten by every accepted
- * submission — the only event that changes the data — so cold and hot
- * requests alike are a single KV read and never wait on D1. Freshness is
- * event-driven, never TTL-guessed: responses carry `Cache-Control:
- * no-cache` plus a strong ETag (SHA-256 of the body, computed once at
- * composition time and stored in KV metadata), so browsers keep a copy but
- * always revalidate — a ~0-byte 304 while the data is unchanged, the new
- * payload the moment it isn't. The only staleness left is KV's own per-PoP
- * cache (cacheTtl, 30 s), plus a day-rollover guard for when no device has
- * reported since midnight. Composition is one D1 batch of three
- * statements; all five ranges are then aggregated in JS.
+ * Composition is one D1 batch of three statements bounded as of today
+ * (composeSiteBody), aggregated into all five ranges in JS; the result
+ * is served from KV, rewritten by every accepted submission (handleSite).
  */
 
 import type { Env } from "./http";
@@ -54,13 +36,12 @@ import {
 import { canonicalModel, canonicalProvider } from "./models";
 
 // The KV key never changes; the schema version rides in the response body
-// (as `schemaVersion`, the cross-repo contract the homepage validates and
-// keys its cache by) and in the KV metadata (so a fresh deploy recomposes
-// on first read instead of serving the previous schema out of KV until
-// the next submission). Bump SITE_VERSION on any shape or semantics
-// change, and keep the homepage's SITE_SCHEMA_VERSION plus its committed
-// /api/site fixture (homepage: src/lib/client/tokens.ts + .test.ts) in
-// lockstep.
+// (`schemaVersion`, which the homepage validates and keys its cache by)
+// and in the KV metadata, so a fresh deploy recomposes on first read
+// instead of serving the previous schema until the next submission. Bump
+// SITE_VERSION on any shape or semantics change, in lockstep with the
+// homepage's SITE_SCHEMA_VERSION and its committed /api/site fixture
+// (homepage: src/lib/client/tokens.ts + .test.ts).
 const SITE_KEY = "site";
 export const SITE_VERSION = 8;
 /** How long a PoP may serve its local copy of the KV entry before
@@ -110,13 +91,12 @@ interface DaySlice {
 }
 
 /**
- * The per-day slice maps are keyed by client and provider ids that came
- * straight from a CLI payload, so they carry no prototype. On a plain
- * object an id spelled `constructor` or `__proto__` resolves an inherited
- * value instead of a fresh slot, and the slice then disappears from the
- * JSON while the day total still counts it — silent under-reporting in the
- * dashboard's stacked chart, at HTTP 200. A Map would work too, but these
- * serialize straight into the response as JSON objects.
+ * Prototype-free, because the slice maps are keyed by ids that came
+ * straight from a CLI payload: on a plain object an id spelled
+ * `constructor` or `__proto__` resolves an inherited value instead of a
+ * fresh slot, and the slice then vanishes from the JSON while the day
+ * total still counts it — silent under-reporting, at HTTP 200. A Map
+ * would be safe too, but these serialize straight into the response.
  */
 const emptySlices = (): Record<string, DaySlice> => Object.create(null);
 
@@ -227,12 +207,19 @@ class RangeAgg {
 export async function composeSiteBody(env: Env): Promise<string> {
   const today = isoToday();
 
-  // `u.date <= ?1` on all three statements is the one place the
-  // as-of-today bound is enforced (see the header): ranges, the daily
-  // series and the device inventory then agree by construction, without
-  // every aggregation having to remember an upper bound. On the device
-  // join it belongs in the ON clause — a WHERE would turn the LEFT JOIN
-  // inner and drop devices that have only reported future-dated rows.
+  // `u.date <= ?1` on all three statements is the one place the payload
+  // is bounded as of today, so ranges, the daily series and the device
+  // inventory agree by construction. Submissions may legitimately carry
+  // dates up to two days ahead (payload.ts keeps the official clock-skew
+  // allowance, and a device east of Asia/Shanghai really is a day ahead
+  // for part of the evening), but a row dated tomorrow has nowhere to go
+  // in a dashboard whose windows all end today: unbounded it would land
+  // in "Today" next to an active time filtered by exact date, and the
+  // section would contradict itself. Such rows wait in D1 for their own
+  // day, which the day-rollover guard in handleSite then composes. On
+  // the device join the bound belongs in the ON clause — a WHERE would
+  // turn the LEFT JOIN inner and drop devices that have only reported
+  // future-dated rows.
   const [usage, activity, deviceRows] = await env.DB.batch([
     env.DB.prepare(
       `SELECT u.date, u.client, u.model, u.provider, ${METRICS_SQL}
@@ -350,13 +337,10 @@ export async function composeSiteBody(env: Env): Promise<string> {
 
 /**
  * Costs are floats summed in JS, so they carry the usual artefacts —
- * `0.011326655199999999`, `6.441234195199998` — and every one of those
- * digits ships to the browser. Rounding to microdollars at the boundary
- * is both smaller (a few KB across the payload) and more honest: nothing
- * upstream knows a cost to the 17th decimal, and no view renders past
- * cents. Applied as a replacer so it reaches every `cost` in the tree —
- * range totals, breakdown rows, daily slices, device inventory — instead
- * of one forgettable call site per aggregation.
+ * `6.441234195199998` — and every digit ships to the browser. Rounding
+ * to microdollars is smaller and more honest: nothing upstream knows a
+ * cost to the 17th decimal. A replacer, so it reaches every `cost` in
+ * the tree instead of one forgettable call site per aggregation.
  */
 function roundCost(key: string, value: unknown): unknown {
   return key === "cost" && typeof value === "number"
@@ -368,9 +352,9 @@ function roundCost(key: string, value: unknown): unknown {
  *  without parsing the body: the composition day (day-rollover guard),
  *  the schema version, and the body's ETag (conditional requests). */
 interface SiteMeta {
-  today?: string;
-  version?: number;
-  etag?: string;
+  today: string;
+  version: number;
+  etag: string;
 }
 
 /** Strong ETag — SHA-256 of the body, quoted per RFC 9110. Computed once
@@ -395,16 +379,20 @@ export async function refreshSiteCache(env: Env): Promise<void> {
 
 export async function handleSite(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   // One KV read per request, hot or cold (cacheTtl caps per-PoP
-  // staleness after a submission rewrite). Recompose inline only when
-  // the entry is missing or predates the etag metadata, was composed by
-  // an older schema version, or was composed on a previous calendar day
-  // and no device has reported since midnight (range windows must slide).
+  // staleness after a submission rewrite). The entry is usable only if
+  // it was composed by this schema version on this calendar day —
+  // otherwise recompose inline, which covers both a deploy that changed
+  // the shape and a midnight nobody has reported since (range windows
+  // must slide even while every device is idle).
   const { value, metadata } = await env.SITE_CACHE.getWithMetadata<SiteMeta>(SITE_KEY, {
     cacheTtl: KV_CACHE_TTL,
   });
   let body = value;
-  let etag = metadata?.etag;
-  if (body === null || !etag || metadata?.version !== SITE_VERSION || metadata?.today !== isoToday()) {
+  let etag =
+    metadata?.version === SITE_VERSION && metadata.today === isoToday()
+      ? metadata.etag
+      : undefined;
+  if (body === null || etag === undefined) {
     body = await composeSiteBody(env);
     etag = await etagOf(body);
     ctx.waitUntil(putSiteCache(env, body, etag));

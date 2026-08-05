@@ -100,8 +100,8 @@ export default {
    * timeout) would otherwise become the runtime's own 500 — an HTML-ish
    * body with no CORS headers, which a cross-origin dashboard reads as a
    * CORS failure rather than as "the collector is down". That is exactly
-   * the hazard http.ts and read.ts already guard for 4xx, so the 5xx
-   * path gets the same treatment: JSON body, full CORS, and the cause
+   * the hazard the routing errors above already guard for 4xx, so the
+   * 5xx path gets the same treatment: JSON body, full CORS, and the cause
    * logged to Workers Logs (observability is on in wrangler.jsonc).
    */
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
