@@ -3,7 +3,6 @@
  * merge semantics (see merge.ts). Also implements:
  *   DELETE /api/settings/submitted-data (tokens delete-submitted-data)
  *   GET    /api/auth/token             (tokens login --token)
- *   GET    /api/me/stats               (TUI remote tab wire contract)
  */
 
 import type { Env } from "./http";
@@ -112,6 +111,11 @@ ON CONFLICT (device_id, date) DO UPDATE SET
 /** Rows per INSERT statement — bounds the JSON parameter comfortably
  *  below D1's 2 MB per-value cap (~120 bytes/row × 5000 ≈ 600 KB). */
 const USAGE_ROWS_PER_STATEMENT = 5000;
+
+/** How long the submission audit log keeps a row. Long enough to answer
+ *  "is every device still reporting on cadence", short enough that the
+ *  table stays flat instead of growing forever (see the DELETE below). */
+const AUDIT_RETENTION_DAYS = 30;
 
 function chunk<T>(items: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -318,8 +322,8 @@ export async function handleSubmit(request: Request, env: Env, ctx: ExecutionCon
         `INSERT INTO submissions
            (id, device_id, received_at, date_start, date_end, total_tokens,
             total_cost, row_count, changed_days, cli_version, generated_at,
-            mode, warning_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            mode)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         submissionId,
@@ -333,9 +337,20 @@ export async function handleSubmit(request: Request, env: Env, ctx: ExecutionCon
         changedDays.size,
         payload.meta?.version ?? null,
         payload.meta?.generatedAt ?? null,
-        mode,
-        warnings.length
+        mode
       )
+  );
+  // Retention, in the same transaction as the row it balances. The audit
+  // log answers "did the last report land, and how often do they come" —
+  // a question only about recent history, while the table itself grows
+  // ~80 rows a day forever (over 80% of them no-ops: devices rescan every
+  // 30 minutes whether or not anything changed). Unbounded it also
+  // dominated the daily R2 export, which copies whatever it finds *every
+  // day* — quadratic storage growth for a log nobody reads past a week.
+  statements.push(
+    env.DB
+      .prepare(`DELETE FROM submissions WHERE received_at < ?`)
+      .bind(now - AUDIT_RETENTION_DAYS * 86_400_000)
   );
 
   await env.DB.batch(statements);
@@ -428,56 +443,4 @@ export async function handleDeleteSubmittedData(request: Request, env: Env): Pro
   await wipeArchive(env);
   await refreshSiteCache(env);
   return json({ deleted: n > 0, deletedSubmissions: n });
-}
-
-/**
- * GET /api/me/stats — the official schemaVersion-1 wire contract, kept for
- * compatibility (its consumer was the CLI's TUI remote tab, which v27
- * removed). Authenticated like the official implementation: the response
- * carries internal device ids, which the public read API never exposes.
- */
-export async function handleMeStats(request: Request, env: Env): Promise<Response> {
-  if (!(await isAuthorized(request, env))) {
-    return json({ error: "Invalid API token" }, 401);
-  }
-  const [totals, days, devices] = await env.DB.batch([
-    env.DB.prepare(
-      `SELECT coalesce(sum(${TOKENS_SQL}), 0) AS tokens,
-              coalesce(sum(u.cost), 0) AS cost
-       FROM daily_usage u`
-    ),
-    env.DB.prepare(
-      `SELECT u.date,
-              sum(${TOKENS_SQL}) AS tokens,
-              sum(u.input) AS inputTokens,
-              sum(u.output) AS outputTokens,
-              sum(u.cost) AS cost
-       FROM daily_usage u GROUP BY u.date ORDER BY u.date`
-    ),
-    env.DB.prepare(`SELECT id, name, last_seen FROM devices ORDER BY last_seen DESC`),
-  ]);
-
-  const totalRow = totals.results[0] as { tokens: number; cost: number } | undefined;
-  const deviceRows = devices.results as unknown as Array<{
-    id: string;
-    name: string | null;
-    last_seen: number | null;
-  }>;
-  const lastSeen = deviceRows.length > 0 ? deviceRows[0].last_seen : null;
-
-  return json({
-    schemaVersion: 1,
-    totalTokens: totalRow?.tokens ?? 0,
-    totalCost: totalRow?.cost ?? 0,
-    deviceCount: deviceRows.length,
-    lastSubmittedAt: lastSeen != null ? new Date(lastSeen).toISOString() : null,
-    days: days.results,
-    devices: deviceRows.map((d) => ({
-      id: d.id,
-      // Legacy rows carry LEGACY_DEVICE_NAME from the write path, so one
-      // fallback covers every unnamed device (as the SQL paths do too).
-      displayName: d.name?.trim() || "Unnamed device",
-      lastSubmittedAt: d.last_seen != null ? new Date(d.last_seen).toISOString() : null,
-    })),
-  });
 }

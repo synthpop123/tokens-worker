@@ -20,17 +20,25 @@ describe("auth boundaries", () => {
       () => call("/api/settings/submitted-data", { method: "DELETE" }),
     ],
     ["GET /api/auth/token", () => call("/api/auth/token")],
-    ["GET /api/me/stats", () => call("/api/me/stats")],
   ])("%s rejects missing tokens", async (_name, request) => {
     const response = await request();
     expect(response.status).toBe(401);
   });
 
   it("rejects wrong tokens", async () => {
-    const response = await call("/api/me/stats", {
+    const response = await call("/api/auth/token", {
       headers: { Authorization: "Bearer wrong-token" },
     });
     expect(response.status).toBe(401);
+  });
+
+  // /api/me/stats was the one endpoint that ever returned internal device
+  // ids. Its consumer (the CLI's TUI remote tab) went away in v27, so the
+  // endpoint went too — and with it the whole category of leak.
+  it("no longer exposes the device-id endpoint at all", async () => {
+    await submit();
+    const response = await call("/api/me/stats", { headers: AUTH });
+    expect(response.status).toBe(404);
   });
 
   it("validates the token for tokens login", async () => {
@@ -98,6 +106,46 @@ describe("submit flow", () => {
     expect(audit).toEqual({ row_count: 0, changed_days: 0 });
   });
 
+  // The audit log grows with report cadence, not with data — ~80 rows a
+  // day, most of them no-ops — so every submission trims its own tail.
+  it("keeps the audit log to a rolling window", async () => {
+    await submit();
+    const ancient = Date.now() - 400 * 86_400_000;
+    await env.DB.prepare(
+      `INSERT INTO submissions
+         (id, device_id, received_at, date_start, date_end, total_tokens,
+          total_cost, row_count, changed_days, mode)
+       VALUES ('ancient', ?, ?, '2025-01-01', '2025-01-01', 0, 0, 0, 0, 'merge')`
+    )
+      .bind(DEVICE_ID, ancient)
+      .run();
+    expect(
+      (await env.DB.prepare(`SELECT count(*) AS n FROM submissions`).first<{ n: number }>())?.n
+    ).toBe(2);
+
+    await submit();
+
+    const remaining = await env.DB.prepare(`SELECT id FROM submissions`).all<{ id: string }>();
+    expect(remaining.results.map((row) => row.id)).not.toContain("ancient");
+  });
+
+  // The daily export exists to restore usage data. The audit log is not
+  // that, and copying an append-only log into a fresh object every day is
+  // how storage grows quadratically.
+  it("excludes the audit log from the daily R2 export", async () => {
+    await submit();
+    const backups = await env.ARCHIVE.list({ prefix: "backup/" });
+    const dump = JSON.parse(await (await env.ARCHIVE.get(backups.objects[0].key))!.text());
+    expect(Object.keys(dump).sort()).toEqual([
+      "daily_activity",
+      "daily_usage",
+      "devices",
+      "exportedAt",
+      "schema",
+    ]);
+    expect(dump.daily_usage).toHaveLength(2);
+  });
+
   it("preserves stored history against a same-revision token regression", async () => {
     await submit();
     const reduced = submissionPayload();
@@ -148,6 +196,24 @@ describe("submit flow", () => {
   });
 });
 
+describe("unhandled failures", () => {
+  // A handler that throws (D1 unreachable, KV timeout) would otherwise
+  // reach the client as the runtime's own 500: no JSON, no CORS, so a
+  // cross-origin dashboard reads "CORS failure" instead of "collector is
+  // down". Renaming the table away is the cheapest real D1 error.
+  it("answers a thrown handler with JSON and CORS, not a bare 500", async () => {
+    await env.DB.prepare(`ALTER TABLE daily_usage RENAME TO daily_usage_hidden`).run();
+    try {
+      const response = await call("/api/stats");
+      expect(response.status).toBe(500);
+      expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+      expect(await response.json()).toEqual({ error: "Internal error" });
+    } finally {
+      await env.DB.prepare(`ALTER TABLE daily_usage_hidden RENAME TO daily_usage`).run();
+    }
+  });
+});
+
 describe("GET /api/health", () => {
   it("is a browser-readable liveness check", async () => {
     const response = await call("/api/health");
@@ -155,22 +221,6 @@ describe("GET /api/health", () => {
     // Public reads are open to any origin; the health check is no exception.
     expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
     expect(await response.json()).toEqual({ service: "tokens-usage", ok: true });
-  });
-});
-
-describe("GET /api/me/stats", () => {
-  it("serves the schemaVersion-1 wire contract to authenticated CLIs", async () => {
-    await submit();
-    const response = await call("/api/me/stats", { headers: AUTH });
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as Record<string, any>;
-    expect(body.schemaVersion).toBe(1);
-    expect(body.totalTokens).toBe(1500);
-    expect(body.deviceCount).toBe(1);
-    expect(body.days).toHaveLength(2);
-    expect(body.days[0]).toMatchObject({ date: "2026-07-18", tokens: 1000, inputTokens: 400 });
-    // Internal device ids are allowed here — the endpoint is authenticated.
-    expect(body.devices[0]).toMatchObject({ id: DEVICE_ID, displayName: "Test MacBook" });
   });
 });
 

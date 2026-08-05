@@ -39,6 +39,24 @@ push: the Workers Builds log prints the executed build command, so a
   `test/site.spec.ts`, the consumer by its `tokens.test.ts`. Independent
   deploys mean a bump is never atomic — see the README's cross-repo
   section for the consumer-first rollout that closes the window.
+- The operative half of that rule is **both together**. The consumer
+  pins an exact version set, so bumping only this side is not a mismatch
+  it degrades through — it is the tokens page dropping to its fallback
+  until the homepage ships. For a change the current reader survives
+  whole (its decoder white-lists the fields it reads, so a *new* key is
+  invisible to it), shipping it under the current version and bumping in
+  the same round as the homepage change that consumes it is the correct
+  reading, not an oversight. `daily[].models` went out that way and
+  `src/site.ts` records why.
+- Every leg of the submission fan-out is bounded on purpose, because
+  devices rescan every 30 minutes whether or not anything changed — over
+  80% of submissions write no usage rows. So: the raw R2 archive uses one
+  fixed key per device, `backup/` exports are pruned past 180 days, and
+  the `submissions` audit log is a rolling 30-day window trimmed by the
+  same D1 batch that appends to it. The daily export deliberately omits
+  `submissions`: copying an append-only log into a fresh object every day
+  is how R2 storage grows with the square of time. Anything new added to
+  this fan-out needs the same treatment.
 - The `/api/site` body is composed **as of today** (Asia/Shanghai):
   submissions may legitimately carry dates up to two days ahead, but
   every window the dashboard draws ends today, so all three composition

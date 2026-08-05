@@ -29,7 +29,7 @@
  *                        `tokens graph`), heatmap-ready with intensity
  *   GET /api/meta        distinct dimension values + data range
  *   GET /api/devices     device inventory with per-device totals
- *   GET /api/submissions audit log
+ *   GET /api/submissions audit log (a rolling 30-day window; see submit.ts)
  */
 
 import type { Env } from "./http";
@@ -664,7 +664,7 @@ export async function handleSubmissions(request: Request, env: Env): Promise<Res
               s.total_tokens AS totalTokens, s.total_cost AS totalCost,
               s.row_count AS rowCount, s.changed_days AS changedDays,
               s.cli_version AS cliVersion, s.generated_at AS generatedAt,
-              s.mode, s.warning_count AS warningCount
+              s.mode
        FROM submissions s LEFT JOIN devices d ON d.id = s.device_id
        ORDER BY s.received_at DESC LIMIT ?`
     )

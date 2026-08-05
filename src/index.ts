@@ -9,13 +9,15 @@
  * messages, cost) — through filterable aggregation endpoints. The route
  * table below is the index; each handler module documents its own contract.
  *
- * Reads are public (it is just usage data) and open to any origin;
- * internal device ids are never exposed. Writes need the bearer token.
+ * Reads are public (it is just usage data) and open to any origin. Writes
+ * need the bearer token. Internal device ids are never exposed — not on
+ * the public endpoints and, since /api/me/stats was removed, nowhere at
+ * all.
  *
  * Every accepted submission refreshes the precomposed /api/site payload in
- * KV and, once per Asia/Shanghai day, exports all tables to R2 — no cron
- * needed, submissions are the only write event and devices report every
- * 30 minutes.
+ * KV and, once per Asia/Shanghai day, exports the usage tables to R2 — no
+ * cron needed, submissions are the only write event and devices report
+ * every 30 minutes.
  *
  * `/` serves the static homepage (public/index.html) through Workers Static
  * Assets, which matches before this router runs. Not implemented: the
@@ -25,7 +27,7 @@
 
 import type { Env } from "./http";
 import { json, CORS_HEADERS } from "./http";
-import { handleSubmit, handleAuthToken, handleDeleteSubmittedData, handleMeStats } from "./submit";
+import { handleSubmit, handleAuthToken, handleDeleteSubmittedData } from "./submit";
 import { handleSite } from "./site";
 import {
   handleStats,
@@ -56,7 +58,6 @@ const ROUTES = new Map<string, Handler>([
   ["POST /api/submit", handleSubmit],
   ["DELETE /api/settings/submitted-data", handleDeleteSubmittedData],
   ["GET /api/auth/token", handleAuthToken],
-  ["GET /api/me/stats", handleMeStats],
   // Public reads: the precomposed dashboard view (site.ts) and the
   // filterable aggregation endpoints (read.ts).
   ["GET /api/site", handleSite],
@@ -80,25 +81,44 @@ function allowedMethods(pathname: string): string[] {
   return allowed;
 }
 
+function route(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  }
+
+  const { pathname } = new URL(request.url);
+  const handler = ROUTES.get(`${request.method} ${pathname}`);
+  if (handler) return handler(request, env, ctx);
+
+  // Routing errors carry CORS for the same reason read errors do: a
+  // browser must be able to read what went wrong.
+  const allow = allowedMethods(pathname).join(", ");
+  if (allow) {
+    return json({ error: `Method not allowed, use ${allow}` }, 405, {
+      Allow: allow,
+      ...CORS_HEADERS,
+    });
+  }
+  return json({ error: "Not found" }, 404, CORS_HEADERS);
+}
+
 export default {
-  fetch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
-    if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: CORS_HEADERS });
+  /**
+   * Every response leaves through here, including the ones nobody
+   * planned: an unhandled throw in a handler (D1 unreachable, KV
+   * timeout) would otherwise become the runtime's own 500 — an HTML-ish
+   * body with no CORS headers, which a cross-origin dashboard reads as a
+   * CORS failure rather than as "the collector is down". That is exactly
+   * the hazard http.ts and read.ts already guard for 4xx, so the 5xx
+   * path gets the same treatment: JSON body, full CORS, and the cause
+   * logged to Workers Logs (observability is on in wrangler.jsonc).
+   */
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    try {
+      return await route(request, env, ctx);
+    } catch (error) {
+      console.error("Unhandled error", request.method, new URL(request.url).pathname, error);
+      return json({ error: "Internal error" }, 500, CORS_HEADERS);
     }
-
-    const { pathname } = new URL(request.url);
-    const handler = ROUTES.get(`${request.method} ${pathname}`);
-    if (handler) return handler(request, env, ctx);
-
-    // Routing errors carry CORS for the same reason read errors do: a
-    // browser must be able to read what went wrong.
-    const allow = allowedMethods(pathname).join(", ");
-    if (allow) {
-      return json({ error: `Method not allowed, use ${allow}` }, 405, {
-        Allow: allow,
-        ...CORS_HEADERS,
-      });
-    }
-    return json({ error: "Not found" }, 404, CORS_HEADERS);
   },
 } satisfies ExportedHandler<Env>;

@@ -684,8 +684,10 @@
       <p class="cap">
         The precomposed dashboard view is rewritten in KV so reads never wait on D1. The raw
         payload lands at <code>raw/&lt;device&gt;/latest.json</code> — submissions are full rescans, so
-        the latest one reproduces a device’s whole history. Once per Asia/Shanghai day, all four
-        tables are exported to <code>backup/YYYY-MM-DD.json</code>.
+        the latest one reproduces a device’s whole history. Once per Asia/Shanghai day, the usage
+        tables are exported to <code>backup/YYYY-MM-DD.json</code> and exports past 180 days are
+        pruned. Every leg is bounded: devices rescan on a timer whether or not anything changed,
+        so anything that accrued per submission would grow on cadence alone.
       </p>
     </div>
 
@@ -817,7 +819,7 @@
         <div class="ep-body">
           <p>
             The one-request dashboard view: totals and breakdowns for five ranges (today, 7/30/90
-            days, all time), the daily series split by provider and by client, and the device
+            days, all time), the daily series sliced by provider, client and model, and the device
             inventory.
             The body carries a <code>schemaVersion</code> the consumer validates before rendering.
             No filters — served from KV with its precomputed ETag, never waits on D1.
@@ -901,7 +903,7 @@
         </button>
         <a class="ep-aside" href="/api/submissions" target="_blank" rel="noopener" aria-label="Open /api/submissions in a new tab">open ↗</a>
         <div class="ep-body">
-          <p>Submission audit log (mode, row count, changed days, warnings, CLI version) — for checking report cadence.</p>
+          <p>Submission audit log (mode, row count, changed days, CLI version) — for checking report cadence. A rolling 30-day window.</p>
           <p class="prm"><code>limit=50</code> (1–500)</p>
         </div>
       </li>
@@ -970,17 +972,6 @@ curl "https://tokens.lkwplus.com/api/graph?year=2026"</code></pre>
         <span class="ep-aside">auth</span>
         <div class="ep-body">
           <p>Token validation for <code>tokens login --token</code>. Responds with <code>{user: {username}}</code>.</p>
-        </div>
-      </li>
-      <li class="ep">
-        <span class="method" data-m="GET">GET</span>
-        <button class="path" type="button" data-copy="/api/me/stats" aria-label="Copy https://tokens.lkwplus.com/api/me/stats">/api/me/stats
-          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
-          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
-        </button>
-        <span class="ep-aside">auth</span>
-        <div class="ep-body">
-          <p>Official schemaVersion-1 contract for the TUI remote tab: totals, per-day series, device list. Authenticated because it returns internal device ids, which the public read API never does.</p>
         </div>
       </li>
     </ol>

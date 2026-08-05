@@ -9,7 +9,9 @@ Self-hosted backend for the [`tokens`](https://github.com/missuo/tokens) CLI, ru
 
 Each machine runs `tokens serve` with `TOKENS_API_URL=https://tokens.lkwplus.com`; the CLI POSTs a full rescan of its local session logs every 30 minutes. This Worker implements the official server's submission contract and merge semantics, stores the full usage matrix in D1, and exposes a filterable read API for the personal site.
 
-Every accepted submission also (a) rewrites the precomposed `/api/site` payload in KV, (b) archives the raw payload to R2 (`raw/<deviceId>/latest.json` — submissions are full rescans, so the latest one reproduces the device's whole history), and (c) once per Asia/Shanghai day exports all four tables to R2 (`backup/YYYY-MM-DD.json`), a long-term backup beyond D1's 30-day Time Travel. Submissions are the only write event, so no cron is needed.
+Every accepted submission also (a) rewrites the precomposed `/api/site` payload in KV, (b) archives the raw payload to R2 (`raw/<deviceId>/latest.json` — submissions are full rescans, so the latest one reproduces the device's whole history), and (c) once per Asia/Shanghai day exports the usage tables to R2 (`backup/YYYY-MM-DD.json`), a long-term backup beyond D1's 30-day Time Travel. Submissions are the only write event, so no cron is needed.
+
+Everything on that fan-out is bounded in size, deliberately: the raw archive uses one fixed key per device, the daily exports are pruned past 180 days, and the submission audit log is a rolling 30-day window trimmed by the same batch that appends to it. Devices rescan every 30 minutes whether or not anything changed — over 80% of submissions write no usage rows at all — so anything that accumulated per submission would grow forever on cadence alone, and anything copied into a fresh daily object would grow with the *square* of time.
 
 ## Homepage
 
@@ -21,7 +23,7 @@ One self-contained HTML file — no build step, no dependencies. The design toke
 
 Usage is stored at maximum granularity — one row per **(device, date, client, model, provider)** with the full token breakdown (`input`, `output`, `cache_read`, `cache_write`, `reasoning`), `messages`, `cost`, and the parser revision that produced it. Everything the read API serves is an aggregation of this matrix, so any view the CLI can produce locally (per client / model / provider / device / arbitrary date window) can be reproduced remotely.
 
-Sidecar tables: `daily_activity` (per-day `activeTimeMs`), `devices` (name, CLI version, time metrics, MCP server list), `submissions` (audit log of accepted submissions).
+Sidecar tables: `daily_activity` (per-day `activeTimeMs`), `devices` (name, CLI version, time metrics, MCP server list), `submissions` (audit log of accepted submissions, kept for 30 days — it answers "did the last report land, and on what cadence", a question only about recent history).
 
 Migrations are **append-only**: D1 tracks them by filename, and `0003` drops and recreates the tables, so renaming or collapsing the applied files would re-run a destructive migration against production.
 
@@ -49,7 +51,6 @@ Every CLI endpoint requires `Authorization: Bearer $TOKENS_API_TOKEN`; the read 
 | `POST /api/submit` | `tokens submit` / `serve` / `autosubmit` | Full submission payload; responds `{success, submissionId, username, metrics, mode, warnings?}` |
 | `DELETE /api/settings/submitted-data` | `tokens delete-submitted-data` | Wipes all stored data across all three stores — D1 tables, every R2 object (raw archives and daily backups reproduce submitted data, so they go too), and the KV site payload, recomposed synchronously so the dashboard is clean before the CLI hears "success"; responds `{deleted, deletedSubmissions}` |
 | `GET /api/auth/token` | `tokens login --token tt_...` | Token validation; responds `{user: {username}}` |
-| `GET /api/me/stats` | nothing current (was the `tokens tui` remote tab, removed in CLI v27) | Official schemaVersion-1 wire contract: totals, per-day series, device list. Kept for compatibility, and authenticated like the official server because it returns internal device ids |
 
 Not implemented: the browser GitHub-OAuth device flow (`POST /api/auth/device[/poll]`); log in with `tokens login --token` instead.
 
@@ -71,14 +72,14 @@ Every aggregate row carries the full metric set: `input`, `output`, `cacheRead`,
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/site` | Precomposed dashboard view, one request for the whole page: per-range (`day`/`week`/`month`/`quarter`/`all`, where `day` is today in Asia/Shanghai — it backs the dashboard's Today section and is the only per-model split of a single day) totals + breakdowns (every row carries its usage span — `days`, `firstDate`, `lastDate`), the full daily series split **by provider and by client** with per-day `active` time, and the device inventory incl. CLI version, sessions, active-time metrics and MCP servers. The whole payload is a view **as of today**: submissions may carry dates up to two days ahead (clock skew, timezones east of Asia/Shanghai), and those rows stay in D1 until their own day arrives rather than landing in a window that ends today. No filters; served from KV. The body carries `schemaVersion` — see [Cross-repo contract](#cross-repo-contract) |
+| `GET /api/site` | Precomposed dashboard view, one request for the whole page: per-range (`day`/`week`/`month`/`quarter`/`all`, where `day` is today in Asia/Shanghai — it backs the dashboard's Today section and is the only place the full metric set is split per model for a single day) totals + breakdowns (every row carries its usage span — `days`, `firstDate`, `lastDate`), the full daily series sliced **by provider, by client and by model** (canonical ids, `{tokens, cost}` each) with per-day `active` time, and the device inventory incl. CLI version, sessions, active-time metrics and MCP servers. Costs are rounded to microdollars. The whole payload is a view **as of today**: submissions may carry dates up to two days ahead (clock skew, timezones east of Asia/Shanghai), and those rows stay in D1 until their own day arrives rather than landing in a window that ends today. No filters; served from KV. The body carries `schemaVersion` — see [Cross-repo contract](#cross-repo-contract) |
 | `GET /api/stats` | Overview: `totals` (+ `activeDays`, `firstDate`, `lastDate`), `daily`, `byClient`, `byModel` (canonical, with `providers`), `byProvider`, `byDevice` (by name) |
 | `GET /api/timeseries?interval=day\|week\|month\|year&group=none\|client\|model\|provider\|device` | `{series: [{period, key?, ...metrics}]}`, optionally split by one dimension — e.g. `interval=day&group=client` powers stacked area charts |
 | `GET /api/breakdown?by=client,model&limit=` | Arbitrary multi-dimension rollup; `by` is any combination of `client`, `model`, `provider`, `device`, `date`, `month`, `year` (mirrors the CLI's `--group-by`); `limit` 1–10000 |
 | `GET /api/graph?year=YYYY` | The same `TokenContributionData` shape as a `tokens graph` export (`meta`, `summary`, `years`, `contributions` with per-client rows, `intensity` 0–4, `activeTimeMs`), reconstructed from the matrix — both the heatmap source and a full-fidelity export (raw model ids); filters apply, so per-client graphs work |
 | `GET /api/meta` | Distinct `clients`, `models` (raw + `canonical`, with provider), `providers`, device names, data `range`, `lastUpdatedAt` — for building filter UIs |
 | `GET /api/devices` | Device inventory: name, first/last seen, CLI version, time metrics, MCP servers, per-device totals |
-| `GET /api/submissions?limit=50` | Submission audit log (`mode`, `rowCount`, `changedDays`, `warningCount`, CLI version) for checking report cadence; `limit` 1–500 |
+| `GET /api/submissions?limit=50` | Submission audit log (`mode`, `rowCount`, `changedDays`, CLI version) for checking report cadence — a rolling 30-day window; `limit` 1–500 |
 | `GET /api/health` | Liveness check (`/` serves the static homepage) |
 
 Examples:
@@ -104,7 +105,7 @@ The two repos deploy independently, so a bump has no atomic moment — whichever
 
 - **The only secret is `TOKENS_API_TOKEN`** (the write-path bearer token). It lives as a Worker secret in Cloudflare and in the gitignored `.dev.vars` locally — never committed. The auth check hashes both sides and compares with the runtime's timing-safe primitive.
 - **`wrangler.jsonc` carries resource identifiers, not credentials** — the D1 `database_id` and KV namespace `id` only name the bindings; access requires a Cloudflare API token that is not in the repo.
-- **Reads are public by design** — aggregate usage numbers for a personal dashboard. Internal device ids never appear on them (an integration test pins this), and raw payloads / backups stay in the private R2 bucket. The one endpoint that returns device ids, `GET /api/me/stats`, requires the bearer token.
+- **Reads are public by design** — aggregate usage numbers for a personal dashboard. Internal device ids never leave the Worker at all: public rows identify devices by display name (an integration test pins this), raw payloads / backups stay in the private R2 bucket, and the one endpoint that ever returned ids (`GET /api/me/stats`, whose consumer the CLI dropped in v27) has been removed.
 - **CORS is a static wildcard, never Origin-derived.** Reads are cacheable, and an Origin-dependent header on a cacheable response poisons caches (`src/http.ts` documents the incident).
 
 ## Setup & deploy
@@ -159,11 +160,13 @@ src/models.ts            Canonical model/provider ids (suffix rules + alias
                          tables; extend ALIASES for new spellings)
 src/site.ts              /api/site — precomposed, schema-versioned dashboard
                          view (no-cache + ETag over KV over one D1 batch)
-src/backup.ts            Daily full-table export to R2 + full-wipe helper
+src/backup.ts            Daily usage-table export to R2 (pruned past 180
+                         days) + full-wipe helper
 test/                    Vitest suite (workerd runtime, real bindings)
 public/                  Static homepage, served at / by Workers Static Assets
 docs/                    README screenshots (not deployed)
-migrations/              D1 schema, append-only (0003 is the current rebuild)
+migrations/              D1 schema, append-only (0003 rebuilt it, 0004
+                         trimmed the audit log)
 vitest.config.mts        vitest-pool-workers config (migrations, test token)
 wrangler.jsonc           Worker config (domain, D1/KV/R2 bindings, assets)
 ```

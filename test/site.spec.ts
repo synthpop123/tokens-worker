@@ -54,8 +54,8 @@ function expectSiteContract(site: Record<string, any>): void {
     for (const metric of ["tokens", "cost", "messages"]) {
       expect(typeof day[metric], `daily.${metric}`).toBe("number");
     }
-    // The two stacking dimensions the trend chart Object.entries() over.
-    for (const dim of ["providers", "clients"]) {
+    // The three stacking dimensions the trend chart Object.entries() over.
+    for (const dim of ["providers", "clients", "models"]) {
       expect(day[dim], `daily.${dim}`).toBeTypeOf("object");
       for (const slice of Object.values(day[dim]) as Array<Record<string, unknown>>) {
         expect(typeof slice.tokens).toBe("number");
@@ -118,6 +118,9 @@ describe("GET /api/site", () => {
       active: 3_600_000,
       providers: { anthropic: expect.objectContaining({ tokens: 1000 }) },
       clients: { cursor: expect.objectContaining({ tokens: 1000 }) },
+      // Keyed canonically, so a day's model slices agree with byModel
+      // rather than splitting one model across its effort spellings.
+      models: { "claude-opus-4-5": expect.objectContaining({ tokens: 1000 }) },
     });
     expect(site.devices).toEqual([
       expect.objectContaining({
@@ -245,7 +248,7 @@ describe("GET /api/site", () => {
     const site = (await (await call("/api/site")).json()) as Record<string, any>;
     expectSiteContract(site);
     const day = site.daily.find((d: any) => d.date === "2026-07-19");
-    for (const dim of ["providers", "clients"] as const) {
+    for (const dim of ["providers", "clients", "models"] as const) {
       const sliced = Object.values(day[dim]).reduce(
         (sum: number, slice: any) => sum + slice.tokens,
         0
@@ -253,6 +256,25 @@ describe("GET /api/site", () => {
       expect(sliced, `daily.${dim} must account for the whole day`).toBe(day.tokens);
     }
     expect(Object.keys(day.clients).sort()).toEqual(["__proto__", "constructor"]);
+  });
+
+  it("rounds cost to microdollars instead of shipping float artefacts", async () => {
+    // 0.1 + 0.2 is the canonical float-summation example: unrounded, the
+    // all-time total serializes as 0.30000000000000004 and every such sum
+    // in the payload spends bytes on digits nothing upstream knows.
+    const payload = submissionPayload();
+    payload.contributions![0].totals.cost = 0.1;
+    payload.contributions![0].clients[0].cost = 0.1;
+    payload.contributions![1].totals.cost = 0.2;
+    payload.contributions![1].clients[0].cost = 0.2;
+    payload.summary!.totalCost = 0.3;
+    await submit(payload);
+
+    const response = await call("/api/site");
+    const raw = await response.text();
+    expect(JSON.parse(raw).ranges.all.totals.cost).toBe(0.3);
+    // Nowhere in the tree, not just on the total the assertion above reads.
+    expect(raw).not.toMatch(/"cost":-?\d+\.\d{7,}/);
   });
 
   it("revalidates by ETag with a 304 that still carries CORS", async () => {

@@ -5,13 +5,13 @@
  * breakdowns for the five ranges it offers (today / 7 / 30 / 90 days /
  * all time, with the range boundaries computed here so client and server
  * always agree on "today" — `day` is the single-day window backing the
- * dashboard's Today section, and the only place a per-model split of one
- * calendar day exists; the daily series below carries client and provider
- * slices but no models), the full daily series split by provider *and* by
- * client (the trend chart's two stacking modes, the weekday profile, the
- * heatmap) with per-day active time where the CLI reported it, and the
- * device inventory with its CLI metadata. Every breakdown row also carries
- * its usage span — distinct active days plus first/last date in range.
+ * dashboard's Today section, and the only place the *full metric set* is
+ * split per model for one calendar day), the full daily series sliced by
+ * provider, client *and* model (the trend chart's stacking modes, the
+ * weekday profile, the heatmap) with per-day active time where the CLI
+ * reported it, and the device inventory with its CLI metadata. Every
+ * breakdown row also carries its usage span — distinct active days plus
+ * first/last date in range.
  * Model and provider ids are canonicalized (see models.ts) *before* any
  * aggregation, so the daily provider slices agree with the provider
  * breakdown. Active days count messages too: early-2025 Cursor logs carry
@@ -61,6 +61,17 @@ import { canonicalModel, canonicalProvider } from "./models";
 // change, and keep the homepage's SITE_SCHEMA_VERSION plus its committed
 // /api/site fixture (homepage: src/lib/client/tokens.ts + .test.ts) in
 // lockstep.
+//
+// Still 7 after `daily[].models` was added, deliberately. The rule that
+// matters is *both together*: the consumer pins an exact version set, so
+// a one-sided bump is not a version mismatch it degrades through, it is
+// the tokens page dropping to its fallback until the other repo ships.
+// This particular change is one the current reader survives whole — its
+// decoder white-lists the fields it reads and ignores the rest, so a new
+// key is invisible to it, and narrowing cost precision still satisfies
+// `isCount`. So the number waits: bump to 8 in the same round as the
+// homepage change that starts reading `models`, following the
+// consumer-first rollout in the README.
 const SITE_KEY = "site";
 export const SITE_VERSION = 7;
 /** How long a PoP may serve its local copy of the KV entry before
@@ -130,6 +141,10 @@ interface SiteDay {
   active?: number;
   providers: Record<string, DaySlice>;
   clients: Record<string, DaySlice>;
+  /** Keyed by *canonical* model id, so the slices agree with byModel.
+   *  Cheap despite the wide id space — a day uses two or three models,
+   *  not the forty-odd the all-time breakdown lists. */
+  models: Record<string, DaySlice>;
 }
 
 /** Shift an ISO day by whole days; anchoring at noon UTC is DST-proof. */
@@ -265,7 +280,15 @@ export async function composeSiteBody(env: Env): Promise<string> {
   const dayFor = (date: string): SiteDay => {
     let day = daily.get(date);
     if (!day) {
-      day = { date, tokens: 0, cost: 0, messages: 0, providers: emptySlices(), clients: emptySlices() };
+      day = {
+        date,
+        tokens: 0,
+        cost: 0,
+        messages: 0,
+        providers: emptySlices(),
+        clients: emptySlices(),
+        models: emptySlices(),
+      };
       daily.set(date, day);
     }
     return day;
@@ -292,6 +315,7 @@ export async function composeSiteBody(env: Env): Promise<string> {
     if (row.tokens > 0 || row.cost > 0) {
       addSlice(day.providers, row.provider || "unknown", row);
       addSlice(day.clients, row.client || "unknown", row);
+      addSlice(day.models, model || "unknown", row);
     }
   }
 
@@ -322,14 +346,33 @@ export async function composeSiteBody(env: Env): Promise<string> {
     cost: device.cost ?? 0,
   }));
 
-  return JSON.stringify({
-    schemaVersion: SITE_VERSION,
-    generatedAt: new Date().toISOString(),
-    today,
-    ranges,
-    daily: [...daily.values()].sort((a, b) => (a.date < b.date ? -1 : 1)),
-    devices,
-  });
+  return JSON.stringify(
+    {
+      schemaVersion: SITE_VERSION,
+      generatedAt: new Date().toISOString(),
+      today,
+      ranges,
+      daily: [...daily.values()].sort((a, b) => (a.date < b.date ? -1 : 1)),
+      devices,
+    },
+    roundCost
+  );
+}
+
+/**
+ * Costs are floats summed in JS, so they carry the usual artefacts —
+ * `0.011326655199999999`, `6.441234195199998` — and every one of those
+ * digits ships to the browser. Rounding to microdollars at the boundary
+ * is both smaller (a few KB across the payload) and more honest: nothing
+ * upstream knows a cost to the 17th decimal, and no view renders past
+ * cents. Applied as a replacer so it reaches every `cost` in the tree —
+ * range totals, breakdown rows, daily slices, device inventory — instead
+ * of one forgettable call site per aggregation.
+ */
+function roundCost(key: string, value: unknown): unknown {
+  return key === "cost" && typeof value === "number"
+    ? Math.round(value * 1e6) / 1e6
+    : value;
 }
 
 /** What rides along with the KV entry so the read path can validate it
