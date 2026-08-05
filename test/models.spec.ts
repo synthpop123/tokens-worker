@@ -77,11 +77,11 @@ describe("canonicalProvider", () => {
     expect(canonicalProvider("anthropic", "glm-4.7")).toBe("anthropic");
     expect(canonicalProvider("openai-codex", "gpt-5.6-sol")).toBe("openai");
     expect(canonicalProvider("moonshotai", "kimi-k2")).toBe("moonshotai");
-    // Same row, but reported by a client that runs no models of its own:
-    // its `openai` means "OpenAI-compatible endpoint", so the model wins.
+    // Same row from a client whose models the user configured: its
+    // `openai` names an OpenAI-compatible endpoint, so the model wins.
     expect(canonicalProvider("openai", "deepseek-v4-flash", "hermes")).toBe("deepseek");
     expect(canonicalProvider("openai", "gpt-5.6-sol", "hermes")).toBe("openai");
-    // ...and a client that does have its own models keeps what it said.
+    // ...while a client whose provider id is a real claim keeps it.
     expect(canonicalProvider("openai", "deepseek-v4-flash", "codex")).toBe("openai");
   });
 
