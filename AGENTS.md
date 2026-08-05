@@ -46,8 +46,8 @@ push: the Workers Builds log prints the executed build command, so a
   whole (its decoder white-lists the fields it reads, so a *new* key is
   invisible to it), shipping it under the current version and bumping in
   the same round as the homepage change that consumes it is the correct
-  reading, not an oversight. `daily[].models` went out that way and
-  `src/site.ts` records why.
+  reading, not an oversight — `daily[].models` shipped that way under 7,
+  and the version caught up to 8 when the homepage started reading it.
 - Every leg of the submission fan-out is bounded on purpose, because
   devices rescan every 30 minutes whether or not anything changed — over
   80% of submissions write no usage rows. So: the raw R2 archive uses one

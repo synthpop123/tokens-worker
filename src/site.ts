@@ -61,19 +61,8 @@ import { canonicalModel, canonicalProvider } from "./models";
 // change, and keep the homepage's SITE_SCHEMA_VERSION plus its committed
 // /api/site fixture (homepage: src/lib/client/tokens.ts + .test.ts) in
 // lockstep.
-//
-// Still 7 after `daily[].models` was added, deliberately. The rule that
-// matters is *both together*: the consumer pins an exact version set, so
-// a one-sided bump is not a version mismatch it degrades through, it is
-// the tokens page dropping to its fallback until the other repo ships.
-// This particular change is one the current reader survives whole — its
-// decoder white-lists the fields it reads and ignores the rest, so a new
-// key is invisible to it, and narrowing cost precision still satisfies
-// `isCount`. So the number waits: bump to 8 in the same round as the
-// homepage change that starts reading `models`, following the
-// consumer-first rollout in the README.
 const SITE_KEY = "site";
-export const SITE_VERSION = 7;
+export const SITE_VERSION = 8;
 /** How long a PoP may serve its local copy of the KV entry before
  *  re-checking central storage — the global worst-case staleness after
  *  a submission rewrites the payload (30 is the API's minimum). */
