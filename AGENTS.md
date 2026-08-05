@@ -38,16 +38,18 @@ push: the Workers Builds log prints the executed build command, so a
   live endpoint, never by hand; the producer shape is pinned by
   `test/site.spec.ts`, the consumer by its `tokens.test.ts`. Independent
   deploys mean a bump is never atomic — see the README's cross-repo
-  section for the consumer-first rollout that closes the window.
+  section for the rollout order.
 - The operative half of that rule is **both together**. The consumer
   pins an exact version set, so bumping only this side is not a mismatch
   it degrades through — it is the tokens page dropping to its fallback
-  until the homepage ships. For a change the current reader survives
-  whole (its decoder white-lists the fields it reads, so a *new* key is
-  invisible to it), shipping it under the current version and bumping in
-  the same round as the homepage change that consumes it is the correct
-  reading, not an oversight — `daily[].models` shipped that way under 7,
-  and the version caught up to 8 when the homepage started reading it.
+  until the homepage ships. Which is also the rollout order: capturing
+  the fixture needs a live endpoint on the new schema, so this Worker
+  goes out first and the page falls back for the couple of minutes in
+  between (schemas 9 and 10 both shipped that way). The alternative —
+  parking a new key under the current version until the homepage reads
+  it — only exists for shapes the current reader survives whole, and it
+  costs a second round through both repos; `daily[].models` took it
+  under 7, and the version caught up to 8 when the homepage read it.
 - Every leg of the submission fan-out is bounded on purpose, because
   devices rescan every 30 minutes whether or not anything changed — over
   80% of submissions write no usage rows. So: the raw R2 archive uses one

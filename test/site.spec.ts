@@ -47,23 +47,29 @@ function expectSiteContract(site: Record<string, any>): void {
       }
     }
 
-    // Model rows name the providers that served them; client rows carry
-    // the cell-level split the two marginals cannot reconstruct.
+    // Model rows name the providers that served them; client and
+    // provider rows carry the cell-level split their marginals cannot
+    // reconstruct.
     for (const row of range.byModel) {
       expect(Array.isArray(row.providers), `ranges.${key}.byModel.providers`).toBe(true);
       for (const provider of row.providers) expect(typeof provider).toBe("string");
     }
-    for (const row of range.byClient) {
-      expect(Array.isArray(row.models), `ranges.${key}.byClient.models`).toBe(true);
-      for (const cell of row.models) {
-        expect(typeof cell.model).toBe("string");
-        for (const metric of ["tokens", "cost", "messages"]) {
-          expect(typeof cell[metric], `ranges.${key}.byClient.models.${metric}`).toBe("number");
+    for (const [list, id] of [
+      ["byClient", "client"],
+      ["byProvider", "provider"],
+    ] as const) {
+      for (const row of range[list]) {
+        expect(Array.isArray(row.models), `ranges.${key}.${list}.models`).toBe(true);
+        for (const cell of row.models) {
+          expect(typeof cell.model).toBe("string");
+          for (const metric of ["tokens", "cost", "messages"]) {
+            expect(typeof cell[metric], `ranges.${key}.${list}.models.${metric}`).toBe("number");
+          }
         }
+        // The cells are a partition of the row itself, not a sample.
+        const summed = row.models.reduce((sum: number, cell: any) => sum + cell.tokens, 0);
+        expect(summed, `ranges.${key}.${list}[${row[id]}].models sum`).toBe(row.tokens);
       }
-      // The cells are a partition of the client's own row, not a sample.
-      const summed = row.models.reduce((sum: number, cell: any) => sum + cell.tokens, 0);
-      expect(summed, `ranges.${key}.byClient[${row.client}].models sum`).toBe(row.tokens);
     }
   }
 
@@ -255,11 +261,12 @@ describe("GET /api/site", () => {
     });
   });
 
-  it("splits one client across the models it drove, biggest first", async () => {
-    // The question the marginals cannot answer: a coding agent running a
-    // model from another vendor. byClient says "claude: 500", byModel
-    // says "gpt-5.5-codex: 300" — only the join says the 300 came
-    // through Claude Code.
+  it("splits clients and providers across the models behind them, biggest first", async () => {
+    // The questions the marginals cannot answer: a coding agent running a
+    // model from another vendor (byClient says "claude: 500", byModel says
+    // "gpt-5.5-codex: 300" — only the join says the 300 came through Claude
+    // Code), and which of a vendor's models its spend went to, summed over
+    // every client that reached it.
     const payload = submissionPayload();
     payload.contributions![1].clients = [
       {
@@ -273,7 +280,7 @@ describe("GET /api/site", () => {
       },
       {
         client: "claude",
-        modelId: "claude-opus-4-5-thinking",
+        modelId: "claude-fable-5-thinking-max",
         providerId: "anthropic",
         tokens: { input: 100, output: 50, cacheRead: 50, cacheWrite: 0, reasoning: 0 },
         cost: 0.2,
@@ -288,12 +295,15 @@ describe("GET /api/site", () => {
     const claude = site.ranges.all.byClient.find((row: any) => row.client === "claude");
     expect(claude.models).toEqual([
       { model: "gpt-5.5-codex", tokens: 300, cost: 0.1, messages: 3 },
-      // Canonicalized before the join, so the cell agrees with byModel.
-      { model: "claude-opus-4-5", tokens: 200, cost: 0.2, messages: 1 },
+      // Canonicalized before the join, so the cells agree with byModel.
+      { model: "claude-fable-5", tokens: 200, cost: 0.2, messages: 1 },
     ]);
-    // The same model reached through two clients keeps one row up top.
-    const merged = site.ranges.all.byModel.find((row: any) => row.model === "claude-opus-4-5");
-    expect(merged.tokens).toBe(1200);
+    const anthropic = site.ranges.all.byProvider.find((row: any) => row.provider === "anthropic");
+    expect(anthropic.models).toEqual([
+      // Cursor's day and Claude Code's day, under the one vendor.
+      { model: "claude-opus-4-5", tokens: 1000, cost: 0.2, messages: 6 },
+      { model: "claude-fable-5", tokens: 200, cost: 0.2, messages: 1 },
+    ]);
   });
 
   it("keeps slices whose client or provider id shadows an Object member", async () => {
