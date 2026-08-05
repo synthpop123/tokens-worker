@@ -72,4 +72,7 @@ export function addMetrics(target: Metrics, row: Metrics): void {
   for (const key of METRIC_KEYS) target[key] += row[key];
 }
 
-export const byTokensDesc = (a: Metrics, b: Metrics): number => b.tokens - a.tokens;
+/** Ranks anything that counts tokens — full metric rows and the leaner
+ *  per-client model cells alike. */
+export const byTokensDesc = (a: { tokens: number }, b: { tokens: number }): number =>
+  b.tokens - a.tokens;

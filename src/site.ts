@@ -11,7 +11,9 @@
  * weekday profile, the heatmap) with per-day active time where the CLI
  * reported it, and the device inventory with its CLI metadata. Every
  * breakdown row also carries its usage span — distinct active days plus
- * first/last date in range.
+ * first/last date in range — and each client row carries the models it
+ * drove, the one cell-level slice of the matrix the marginals cannot
+ * reconstruct.
  *
  * Model and provider ids are canonicalized (see models.ts) *before* any
  * aggregation, so the daily provider slices agree with the provider
@@ -43,7 +45,7 @@ import { canonicalModel, canonicalProvider } from "./models";
 // homepage's SITE_SCHEMA_VERSION and its committed /api/site fixture
 // (homepage: src/lib/client/tokens.ts + .test.ts).
 const SITE_KEY = "site";
-export const SITE_VERSION = 8;
+export const SITE_VERSION = 9;
 /** How long a PoP may serve its local copy of the KV entry before
  *  re-checking central storage — the global worst-case staleness after
  *  a submission rewrites the payload (30 is the API's minimum). */
@@ -152,11 +154,27 @@ function serializeEntries<T>(map: Map<string, Entry<T>>) {
   });
 }
 
+/**
+ * The models one client drove, inside one range. The two breakdowns are
+ * marginals of the same matrix, and a marginal cannot be un-summed: no
+ * amount of `byClient` and `byModel` tells you that the Claude Code rows
+ * include a non-Anthropic model. This is the cell-level join, carried
+ * only where the dashboard asks the question (client → model) and
+ * without the metric split or usage span the top-level rows get — the
+ * disclosure shows a share, not a second full breakdown.
+ */
+interface ClientModel {
+  model: string;
+  tokens: number;
+  cost: number;
+  messages: number;
+}
+
 /** One range's aggregation state, filled row by row. */
 class RangeAgg {
   totals = emptyMetrics();
   byModel = new Map<string, Entry<{ model: string; providers: Set<string> }>>();
-  byClient = new Map<string, Entry<{ client: string }>>();
+  byClient = new Map<string, Entry<{ client: string; models: Map<string, ClientModel> }>>();
   byProvider = new Map<string, Entry<{ provider: string }>>();
   days = new Map<string, { tokens: number; messages: number }>();
 
@@ -167,7 +185,18 @@ class RangeAgg {
 
     const entry = fold(this.byModel, model, row, () => ({ model, providers: new Set<string>() }));
     if (row.provider) entry.providers.add(row.provider);
-    fold(this.byClient, row.client, row, () => ({ client: row.client }));
+    const client = fold(this.byClient, row.client, row, () => ({
+      client: row.client,
+      models: new Map<string, ClientModel>(),
+    }));
+    let cell = client.models.get(model);
+    if (!cell) {
+      cell = { model, tokens: 0, cost: 0, messages: 0 };
+      client.models.set(model, cell);
+    }
+    cell.tokens += row.tokens;
+    cell.cost += row.cost;
+    cell.messages += row.messages;
     fold(this.byProvider, row.provider, row, () => ({ provider: row.provider }));
 
     let day = this.days.get(row.date);
@@ -195,9 +224,12 @@ class RangeAgg {
       },
       byModel: serializeEntries(this.byModel).map(({ providers, ...rest }) => ({
         ...rest,
-        providers: [...providers].join(","),
+        providers: [...providers].sort(),
       })),
-      byClient: serializeEntries(this.byClient),
+      byClient: serializeEntries(this.byClient).map(({ models, ...rest }) => ({
+        ...rest,
+        models: [...models.values()].sort(byTokensDesc),
+      })),
       byProvider: serializeEntries(this.byProvider),
     };
   }
