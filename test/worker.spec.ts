@@ -1,8 +1,8 @@
 /**
  * Integration tests over real (miniflare-backed) D1/KV/R2 bindings:
- * auth boundaries, the submit → merge → fan-out flow, full-wipe delete
- * semantics, the read API's query contract, and the privacy rule that
- * internal device ids never appear on public endpoints.
+ * auth boundaries, the submit → merge → fan-out flow, retention on both
+ * bounded stores, full-wipe delete semantics, and the error path.
+ * /api/site — the only read endpoint left — has its own spec.
  */
 
 import { env } from "cloudflare:test";
@@ -202,9 +202,12 @@ describe("unhandled failures", () => {
   // cross-origin dashboard reads "CORS failure" instead of "collector is
   // down". Renaming the table away is the cheapest real D1 error.
   it("answers a thrown handler with JSON and CORS, not a bare 500", async () => {
+    // An empty KV entry forces /api/site to compose from D1 rather than
+    // serve a cached payload, so the missing table actually reaches it.
+    await env.SITE_CACHE.delete("site");
     await env.DB.prepare(`ALTER TABLE daily_usage RENAME TO daily_usage_hidden`).run();
     try {
-      const response = await call("/api/stats");
+      const response = await call("/api/site");
       expect(response.status).toBe(500);
       expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
       expect(await response.json()).toEqual({ error: "Internal error" });
@@ -254,235 +257,5 @@ describe("DELETE /api/settings/submitted-data", () => {
       headers: AUTH,
     });
     expect(await response.json()).toEqual({ deleted: false, deletedSubmissions: 0 });
-  });
-});
-
-describe("read API query contract", () => {
-  it("serves filtered aggregates", async () => {
-    await submit();
-    const response = await call("/api/stats?client=cursor&from=2026-07-01");
-    const body = (await response.json()) as Record<string, any>;
-    expect(body.totals.tokens).toBe(1000);
-    expect(body.byClient).toHaveLength(1);
-
-    // Canonical merging: both spellings collapse into claude-opus-4-5.
-    const all = (await (await call("/api/stats")).json()) as Record<string, any>;
-    expect(all.byModel).toHaveLength(1);
-    expect(all.byModel[0]).toMatchObject({ model: "claude-opus-4-5", tokens: 1500 });
-
-    const series = (await (
-      await call("/api/timeseries?interval=month&group=model")
-    ).json()) as Record<string, any>;
-    expect(series.series).toEqual([
-      expect.objectContaining({ period: "2026-07", key: "claude-opus-4-5", tokens: 1500 }),
-    ]);
-  });
-
-  it("re-attributes gateway provider rows to model vendors on aggregates", async () => {
-    // Day 2 rewritten as gateway-provider rows: a Zed-hosted Claude model,
-    // GLM through OpenCode zen, and DeepSeek through pi's OpenCode Go.
-    const payload = submissionPayload();
-    payload.summary!.totalTokens = 1600;
-    payload.summary!.totalCost = 0.55;
-    payload.summary!.clients = ["cursor", "zed", "opencode", "pi"];
-    payload.contributions![1].totals = { tokens: 600, cost: 0.35, messages: 5 };
-    payload.contributions![1].clients = [
-      {
-        client: "zed",
-        modelId: "claude-sonnet-5",
-        providerId: "zed.dev",
-        tokens: { input: 100, output: 100, cacheRead: 50, cacheWrite: 30, reasoning: 20 },
-        cost: 0.2,
-        messages: 3,
-        provenance: { schemaVersion: 3, messageCount: 3, modelCount: 1 },
-      },
-      {
-        client: "opencode",
-        modelId: "glm-4.7",
-        providerId: "opencode",
-        tokens: { input: 100, output: 50, cacheRead: 30, cacheWrite: 10, reasoning: 10 },
-        cost: 0.1,
-        messages: 1,
-        provenance: { schemaVersion: 3, messageCount: 1, modelCount: 1 },
-      },
-      {
-        client: "pi",
-        modelId: "deepseek-v4-flash",
-        providerId: "opencode-go",
-        tokens: { input: 50, output: 25, cacheRead: 10, cacheWrite: 10, reasoning: 5 },
-        cost: 0.05,
-        messages: 1,
-        provenance: { schemaVersion: 3, messageCount: 1, modelCount: 1 },
-      },
-    ];
-    await submit(payload);
-
-    // /api/stats: byProvider re-attributed (no gateway ids), byModel
-    // providers lists re-attributed too.
-    const stats = (await (await call("/api/stats")).json()) as Record<string, any>;
-    expect(stats.byProvider).toEqual([
-      expect.objectContaining({ provider: "anthropic", tokens: 1300 }),
-      expect.objectContaining({ provider: "zai", tokens: 200 }),
-      expect.objectContaining({ provider: "deepseek", tokens: 100 }),
-    ]);
-    expect(stats.byModel).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ model: "glm-4.7", providers: "zai" }),
-        expect.objectContaining({ model: "deepseek-v4-flash", providers: "deepseek" }),
-        expect.objectContaining({ model: "claude-sonnet-5", providers: "anthropic" }),
-      ])
-    );
-
-    // Timeseries and breakdown agree.
-    const series = (await (
-      await call("/api/timeseries?interval=month&group=provider")
-    ).json()) as Record<string, any>;
-    expect(series.series).toEqual([
-      expect.objectContaining({ period: "2026-07", key: "anthropic", tokens: 1300 }),
-      expect.objectContaining({ period: "2026-07", key: "zai", tokens: 200 }),
-      expect.objectContaining({ period: "2026-07", key: "deepseek", tokens: 100 }),
-    ]);
-    const breakdown = (await (
-      await call("/api/breakdown?by=provider")
-    ).json()) as Record<string, any>;
-    expect(breakdown.rows).toEqual([
-      expect.objectContaining({ provider: "anthropic", tokens: 1300 }),
-      expect.objectContaining({ provider: "zai", tokens: 200 }),
-      expect.objectContaining({ provider: "deepseek", tokens: 100 }),
-    ]);
-    expect(breakdown.rows[0]).not.toHaveProperty("model");
-
-    // /api/site: provider breakdown and daily slices agree.
-    const site = (await (await call("/api/site")).json()) as Record<string, any>;
-    expect(site.ranges.all.byProvider).toEqual([
-      expect.objectContaining({ provider: "anthropic", tokens: 1300 }),
-      expect.objectContaining({ provider: "zai", tokens: 200 }),
-      expect.objectContaining({ provider: "deepseek", tokens: 100 }),
-    ]);
-    expect(site.daily[1].providers).toEqual({
-      anthropic: expect.objectContaining({ tokens: 300 }),
-      zai: expect.objectContaining({ tokens: 200 }),
-      deepseek: expect.objectContaining({ tokens: 100 }),
-    });
-
-    // Raw ids stay the filter vocabulary: /api/meta lists the gateway
-    // spellings, and provider= matches them.
-    const meta = (await (await call("/api/meta")).json()) as Record<string, any>;
-    expect(meta.providers).toEqual(["anthropic", "opencode", "opencode-go", "zed.dev"]);
-    const filtered = (await (
-      await call("/api/stats?provider=zed.dev")
-    ).json()) as Record<string, any>;
-    expect(filtered.totals.tokens).toBe(300);
-    expect(filtered.byProvider).toEqual([
-      expect.objectContaining({ provider: "anthropic", tokens: 300 }),
-    ]);
-    const goFiltered = (await (
-      await call("/api/stats?provider=opencode-go")
-    ).json()) as Record<string, any>;
-    expect(goFiltered.totals.tokens).toBe(100);
-    expect(goFiltered.byProvider).toEqual([
-      expect.objectContaining({ provider: "deepseek", tokens: 100 }),
-    ]);
-  });
-
-  it("rejects parameters an endpoint would otherwise silently ignore", async () => {
-    for (const path of [
-      "/api/stats?foo=1",
-      "/api/meta?client=cursor",
-      "/api/devices?from=2026-01-01",
-      "/api/submissions?client=cursor",
-      "/api/graph?interval=day",
-      "/api/timeseries?by=model",
-    ]) {
-      const response = await call(path);
-      expect(response.status, path).toBe(400);
-      const body = (await response.json()) as { error: string };
-      expect(body.error, path).toContain("Unsupported parameter");
-    }
-  });
-
-  it("caps comma-list filter values below D1's bound-parameter limit", async () => {
-    const list = Array.from({ length: 21 }, (_, i) => `c${i}`).join(",");
-    const response = await call(`/api/stats?client=${list}`);
-    expect(response.status).toBe(400);
-    expect(((await response.json()) as { error: string }).error).toContain("at most 20");
-  });
-
-  it("keeps validating filter shapes", async () => {
-    expect((await call("/api/stats?from=2026/01/01")).status).toBe(400);
-    expect((await call("/api/timeseries?interval=hour")).status).toBe(400);
-    expect((await call("/api/breakdown?by=nope")).status).toBe(400);
-    expect((await call("/api/graph?year=26")).status).toBe(400);
-  });
-
-  it("reads an empty parameter value as an absent one", async () => {
-    // One rule for every parameter: ?group= is not a group named "", and
-    // ?limit= is not a limit of zero.
-    await submit();
-    for (const path of [
-      "/api/timeseries?group=",
-      "/api/timeseries?interval=",
-      "/api/graph?year=",
-      "/api/stats?from=&client=",
-      "/api/submissions?limit=",
-      "/api/breakdown?limit=",
-    ]) {
-      expect((await call(path)).status, path).toBe(200);
-    }
-    const series = (await (await call("/api/timeseries?group=")).json()) as Record<string, any>;
-    expect(series.group).toBeNull();
-  });
-
-  it("does not resolve enum values off Object.prototype", async () => {
-    // Every lookup table keyed by a query value is a Map: as plain objects,
-    // `?interval=constructor` used to pass the `unknown value` guard and
-    // interpolate a function into the SQL (a 500 instead of a 400).
-    for (const path of [
-      "/api/timeseries?interval=constructor",
-      "/api/timeseries?group=toString",
-      "/api/breakdown?by=constructor",
-      "/api/breakdown?by=model,hasOwnProperty",
-    ]) {
-      expect((await call(path)).status, path).toBe(400);
-    }
-  });
-
-  it("rejects an out-of-range limit instead of silently clamping", async () => {
-    for (const path of [
-      "/api/submissions?limit=abc",
-      "/api/submissions?limit=0",
-      "/api/submissions?limit=501",
-      "/api/breakdown?limit=1.5",
-      "/api/breakdown?limit=-1",
-    ]) {
-      const response = await call(path);
-      expect(response.status, path).toBe(400);
-      expect(((await response.json()) as { error: string }).error, path).toContain("limit must be");
-    }
-    expect((await call("/api/submissions?limit=500")).status).toBe(200);
-  });
-
-  it("never exposes internal device ids on public endpoints", async () => {
-    await submit();
-    const byName = ["/api/stats", "/api/devices", "/api/meta", "/api/submissions", "/api/site"];
-    for (const path of [...byName, "/api/graph"]) {
-      const text = await (await call(path)).text();
-      expect(text, path).not.toContain(DEVICE_ID);
-      if (byName.includes(path)) expect(text, path).toContain("Test MacBook");
-    }
-  });
-
-  it("reconstructs the tokens-graph export shape", async () => {
-    await submit();
-    const body = (await (await call("/api/graph")).json()) as Record<string, any>;
-    expect(body.summary).toMatchObject({ totalTokens: 1500, activeDays: 2 });
-    expect(body.contributions).toHaveLength(2);
-    expect(body.contributions[0]).toMatchObject({
-      date: "2026-07-18",
-      intensity: 3,
-      activeTimeMs: 3_600_000,
-    });
-    // Full-fidelity export keeps raw model spellings.
-    expect(body.contributions[1].clients[0].modelId).toBe("claude-opus-4-5-thinking");
   });
 });

@@ -611,7 +611,7 @@
   <p class="intro">
     Self-hosted backend for the <a href="https://github.com/missuo/tokens" rel="noopener">tokens</a> CLI,
     running on a single Cloudflare Worker. Every machine reports its AI-agent token usage here;
-    D1 keeps the full matrix and a public read API feeds
+    D1 keeps the full matrix and one precomposed endpoint feeds
     <a href="https://lkwplus.com/tokens" rel="noopener">lkwplus.com/tokens</a>.
   </p>
 
@@ -653,9 +653,9 @@
     <h2>Architecture</h2>
     <p>
       One Worker, three bindings. Submissions are the only write event, so they drive everything
-      downstream — there is no cron. Reads never queue behind writes: the dashboard payload is
-      precomposed into KV and served with an ETag so browsers revalidate instead of guessing,
-      and the rest of the read API aggregates D1 per request behind a 5-minute browser cache.
+      downstream — there is no cron. Reads never queue behind writes, and never touch D1 at all
+      in the steady state: the dashboard payload is precomposed into KV and served with an ETag
+      so browsers revalidate instead of guessing.
     </p>
 
     <div class="lane">
@@ -714,10 +714,11 @@
       <code>(device, date, client, model, provider)</code> carrying
       <code>input</code>, <code>output</code>, <code>cacheRead</code>, <code>cacheWrite</code>,
       <code>reasoning</code>, <code>messages</code>, <code>cost</code> and the parser revision that
-      produced it. Everything the read API serves is an aggregation of this matrix. Sidecar
-      tables: <code>daily_activity</code> (per-day active time), <code>devices</code> (name, CLI
-      version, time metrics, MCP servers) and <code>submissions</code> (audit log). All dates are
-      calendar days in Asia/Shanghai.
+      produced it. <code>/api/site</code> is an aggregation of this matrix, and raw ids are kept
+      here, so nothing canonicalization does is lossy. Sidecar tables:
+      <code>daily_activity</code> (per-day active time), <code>devices</code> (name, CLI
+      version, time metrics, MCP servers) and <code>submissions</code> (audit log, 30-day rolling
+      window). All dates are calendar days in Asia/Shanghai.
     </p>
     <table>
       <thead>
@@ -785,27 +786,28 @@
   <section id="read-api">
     <h2>Read API</h2>
     <p>
-      Public, no auth. <code>/api/site</code> serves <code>Cache-Control: no-cache</code> with a
-      strong <code>ETag</code> — browsers revalidate every load and get a ~0-byte <code>304</code>
-      while the data is unchanged; the aggregate endpoints cache for 5 minutes.
-      The four matrix endpoints (<code>stats</code>, <code>timeseries</code>,
-      <code>breakdown</code>, <code>graph</code>) share one filter set, freely
-      combinable: <code>from</code>/<code>to</code> (inclusive <code>YYYY-MM-DD</code> bounds) and
-      <code>client</code>, <code>model</code>, <code>provider</code>, <code>device</code>
-      (comma-separated exact matches, at most 20 values each; <code>device</code> takes display
-      names). Parameters an endpoint does not support are rejected with a <code>400</code> rather
-      than silently ignored. Every aggregate
-      row carries the full metric set — the five token categories, their sum, messages and cost.
-      Aggregates merge model and provider spellings under canonical ids
-      (<code>claude-fable-5-thinking-max</code> → <code>claude-fable-5</code>, while
-      Qwen's real <code>-plus</code>/<code>-max</code> product tiers stay distinct;
-      <code>openai-codex</code> → <code>openai</code>), and providers mean
+      Public, no auth — and deliberately one endpoint. A filterable aggregation API
+      (<code>stats</code>, <code>timeseries</code>, <code>breakdown</code>, <code>graph</code>,
+      <code>meta</code>, <code>devices</code>, <code>submissions</code>) used to sit here and
+      nothing ever called it: the CLI computes those views locally, and the dashboard reads the
+      precomposed payload. The matrix behind them is untouched in D1 at full fidelity — reachable
+      through <code>wrangler d1 execute</code>, the R2 raw archives and the daily exports — so
+      what went away is a public surface, not the data or any question you could ask it.
+    </p>
+    <p>
+      <code>/api/site</code> serves <code>Cache-Control: no-cache</code> with a strong
+      <code>ETag</code> — browsers revalidate every load and get a ~0-byte <code>304</code>
+      while the data is unchanged. Every breakdown row carries the full metric set: the five
+      token categories, their sum, messages and cost. Model and provider ids are canonicalized
+      <em>before</em> aggregation (<code>claude-fable-5-thinking-max</code> →
+      <code>claude-fable-5</code>, while Qwen's real <code>-plus</code>/<code>-max</code> product
+      tiers stay distinct; <code>openai-codex</code> → <code>openai</code>), which is what makes
+      the per-day model slices agree with the model breakdown. Providers mean
       <em>model vendors</em>: rows whose client reported its own gateway as the
       provider (<code>zed.dev</code>, <code>opencode</code>, <code>opencode-go</code>,
       <code>opencode_go</code>) are re-attributed by model name
       (<code>qwen3.8-max</code> → <code>alibaba</code>), with models the rules
-      can't place staying under the gateway id;
-      <code>/api/graph</code> keeps raw ids as the full-fidelity export.
+      can't place staying under the gateway id. D1 keeps the raw spellings, so none of it is lossy.
     </p>
 
     <ol class="eps">
@@ -828,87 +830,6 @@
       </li>
       <li class="ep">
         <span class="method" data-m="GET">GET</span>
-        <button class="path" type="button" data-copy="/api/stats" aria-label="Copy https://tokens.lkwplus.com/api/stats">/api/stats
-          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
-          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
-        </button>
-        <a class="ep-aside" href="/api/stats" target="_blank" rel="noopener" aria-label="Open /api/stats in a new tab">open ↗</a>
-        <div class="ep-body">
-          <p>Overview: totals (with active days and date range), daily series, and byClient / byModel / byProvider / byDevice rollups.</p>
-        </div>
-      </li>
-      <li class="ep">
-        <span class="method" data-m="GET">GET</span>
-        <button class="path" type="button" data-copy="/api/timeseries" aria-label="Copy https://tokens.lkwplus.com/api/timeseries">/api/timeseries
-          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
-          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
-        </button>
-        <a class="ep-aside" href="/api/timeseries" target="_blank" rel="noopener" aria-label="Open /api/timeseries in a new tab">open ↗</a>
-        <div class="ep-body">
-          <p>Bucketed series, optionally split by one dimension — <code>interval=day&amp;group=client</code> powers stacked area charts.</p>
-          <p class="prm"><code>interval=day|week|month|year</code> <code>group=none|client|model|provider|device</code></p>
-        </div>
-      </li>
-      <li class="ep">
-        <span class="method" data-m="GET">GET</span>
-        <button class="path" type="button" data-copy="/api/breakdown" aria-label="Copy https://tokens.lkwplus.com/api/breakdown">/api/breakdown
-          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
-          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
-        </button>
-        <a class="ep-aside" href="/api/breakdown" target="_blank" rel="noopener" aria-label="Open /api/breakdown in a new tab">open ↗</a>
-        <div class="ep-body">
-          <p>Arbitrary multi-dimension rollup, mirroring the CLI’s <code>--group-by</code>.</p>
-          <p class="prm"><code>by=client,model,provider,device,date,month,year</code> <code>limit=</code> (1–10000)</p>
-        </div>
-      </li>
-      <li class="ep">
-        <span class="method" data-m="GET">GET</span>
-        <button class="path" type="button" data-copy="/api/graph" aria-label="Copy https://tokens.lkwplus.com/api/graph">/api/graph
-          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
-          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
-        </button>
-        <a class="ep-aside" href="/api/graph" target="_blank" rel="noopener" aria-label="Open /api/graph in a new tab">open ↗</a>
-        <div class="ep-body">
-          <p>The same <code>TokenContributionData</code> shape as a <code>tokens graph</code> export — heatmap source (per-day intensity 0–4) and full-fidelity export in one.</p>
-          <p class="prm"><code>year=YYYY</code></p>
-        </div>
-      </li>
-      <li class="ep">
-        <span class="method" data-m="GET">GET</span>
-        <button class="path" type="button" data-copy="/api/meta" aria-label="Copy https://tokens.lkwplus.com/api/meta">/api/meta
-          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
-          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
-        </button>
-        <a class="ep-aside" href="/api/meta" target="_blank" rel="noopener" aria-label="Open /api/meta in a new tab">open ↗</a>
-        <div class="ep-body">
-          <p>Distinct clients, models (raw + canonical), providers and device names, plus the data range — everything a filter UI needs. No filters.</p>
-        </div>
-      </li>
-      <li class="ep">
-        <span class="method" data-m="GET">GET</span>
-        <button class="path" type="button" data-copy="/api/devices" aria-label="Copy https://tokens.lkwplus.com/api/devices">/api/devices
-          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
-          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
-        </button>
-        <a class="ep-aside" href="/api/devices" target="_blank" rel="noopener" aria-label="Open /api/devices in a new tab">open ↗</a>
-        <div class="ep-body">
-          <p>Device inventory: first/last seen, CLI version, session and active-time metrics, MCP servers, per-device totals. No filters.</p>
-        </div>
-      </li>
-      <li class="ep">
-        <span class="method" data-m="GET">GET</span>
-        <button class="path" type="button" data-copy="/api/submissions" aria-label="Copy https://tokens.lkwplus.com/api/submissions">/api/submissions
-          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
-          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
-        </button>
-        <a class="ep-aside" href="/api/submissions" target="_blank" rel="noopener" aria-label="Open /api/submissions in a new tab">open ↗</a>
-        <div class="ep-body">
-          <p>Submission audit log (mode, row count, changed days, CLI version) — for checking report cadence. A rolling 30-day window.</p>
-          <p class="prm"><code>limit=50</code> (1–500)</p>
-        </div>
-      </li>
-      <li class="ep">
-        <span class="method" data-m="GET">GET</span>
         <button class="path" type="button" data-copy="/api/health" aria-label="Copy https://tokens.lkwplus.com/api/health">/api/health
           <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
           <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
@@ -921,14 +842,15 @@
     </ol>
 
     <h3 class="label">Examples</h3>
-    <pre><code><span class="c"># per-client daily series for a stacked chart, last 30 days</span>
-curl "https://tokens.lkwplus.com/api/timeseries?interval=day&amp;group=client&amp;from=2026-06-18"
+    <pre><code><span class="c"># the whole dashboard, one request</span>
+curl "https://tokens.lkwplus.com/api/site"
 
-<span class="c"># top models across cursor only</span>
-curl "https://tokens.lkwplus.com/api/breakdown?by=model&amp;client=cursor&amp;limit=10"
+<span class="c"># revalidate: ~0 bytes back while the data is unchanged</span>
+curl -H 'If-None-Match: "&lt;etag&gt;"' -i "https://tokens.lkwplus.com/api/site"
 
-<span class="c"># 2026 contribution graph for the heatmap</span>
-curl "https://tokens.lkwplus.com/api/graph?year=2026"</code></pre>
+<span class="c"># ad-hoc questions go to the matrix directly, not to an endpoint</span>
+npx wrangler d1 execute tokens-usage --remote \
+  --command "select model, sum(cost) c from daily_usage group by 1 order by c desc limit 10"</code></pre>
   </section>
 
   <section id="cli-api">

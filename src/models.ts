@@ -3,9 +3,9 @@
  *
  * The CLIs report one model id per (model x reasoning effort x serving
  * tier): `claude-fable-5-thinking-max`, `gpt-5-codex-high`,
- * `composer-2-fast`, ... For aggregate views those are all the same model,
- * so /api/site, /api/stats, /api/breakdown and /api/timeseries merge rows
- * under a canonical name (mergeRows below).
+ * `composer-2-fast`, ... For aggregate views those are all the same
+ * model, so /api/site canonicalizes ids *before* aggregating — which is
+ * why its per-day model slices agree with its byModel breakdown.
  *
  * Provider ids are canonicalized to **model vendors**, because the raw ids
  * mix two semantics: clients whose logs record who served the request
@@ -19,8 +19,9 @@
  * (composer, big-pickle, ...) stay under the gateway id, matching the
  * CLI's own Cursor fallback.
  *
- * Raw spellings remain the filter vocabulary (/api/meta, `model=` /
- * `provider=`), and /api/graph keeps them as the full-fidelity export.
+ * Raw spellings are what D1 stores, so nothing here is lossy: the matrix
+ * keeps every id the CLIs reported and canonicalization happens on the
+ * way out.
  *
  * Maintenance: when a new model shows up with a spelling the rules get
  * wrong, add an ALIASES entry. Mapping a raw name to itself pins it and
@@ -31,7 +32,6 @@
  * provider_identity.rs; this Worker normalizes the final vendor ids).
  */
 
-import { METRIC_KEYS, type Metrics } from "./metrics";
 
 const EFFORT = "minimal|low|medium|high|xhigh|max";
 
@@ -174,60 +174,4 @@ export function canonicalProvider(raw: string, model?: string): string {
     return inferProviderFromModel(model) ?? provider;
   }
   return provider;
-}
-
-/**
- * Merge aggregate rows whose ids share a canonical spelling: metrics are
- * summed, comma-separated `providers` lists unioned (canonically, with the
- * row's model as re-attribution context), and everything else keeps the
- * first row's value. `field` selects the id column (default "model") and
- * `canonicalize` the mapping (default canonicalModel); `groupBy` scopes
- * the merge for rows that carry extra dimensions (e.g. per-period
- * timeseries rows). Output preserves first-appearance order; callers
- * re-sort as their endpoint requires.
- */
-export function mergeRows<T extends Metrics>(
-  rows: T[],
-  options: {
-    field?: string;
-    canonicalize?: (raw: string) => string;
-    groupBy?: (row: T) => string;
-  } = {},
-): T[] {
-  const field = options.field ?? "model";
-  const canonicalize = options.canonicalize ?? canonicalModel;
-  // Rows merge under one canonical model, so re-canonicalizing an
-  // already-canonical providers list with a sibling spelling of that model
-  // is a no-op — vendor inference agrees across spellings of one model.
-  const unionProviders = (model: string | undefined, ...lists: unknown[]) =>
-    [
-      ...new Set(
-        lists
-          .flatMap((list) => (typeof list === "string" ? list.split(",") : []))
-          .filter((provider) => provider.length > 0)
-          .map((provider) => canonicalProvider(provider, model)),
-      ),
-    ].join(",");
-  const merged = new Map<string, T>();
-  for (const row of rows) {
-    const fields = row as Record<string, unknown>;
-    const model = typeof fields.model === "string" ? fields.model : undefined;
-    const id = canonicalize(String(fields[field] ?? ""));
-    const key = (options.groupBy ? `${options.groupBy(row)}\u0000` : "") + id;
-    const target = merged.get(key);
-    if (!target) {
-      const copy = { ...row, [field]: id };
-      if (typeof fields.providers === "string") {
-        (copy as Record<string, unknown>).providers = unionProviders(model, fields.providers);
-      }
-      merged.set(key, copy);
-      continue;
-    }
-    for (const metric of METRIC_KEYS) target[metric] += row[metric];
-    const targetFields = target as Record<string, unknown>;
-    if (typeof targetFields.providers === "string" || typeof fields.providers === "string") {
-      targetFields.providers = unionProviders(model, targetFields.providers, fields.providers);
-    }
-  }
-  return [...merged.values()];
 }

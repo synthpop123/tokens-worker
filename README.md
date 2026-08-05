@@ -7,7 +7,7 @@ Self-hosted backend for the [`tokens`](https://github.com/missuo/tokens) CLI, ru
   <img src="docs/homepage-light.png" alt="Tokens Worker homepage — live totals, collector status and the write/fan-out/read architecture" width="100%">
 </picture>
 
-Each machine runs `tokens serve` with `TOKENS_API_URL=https://tokens.lkwplus.com`; the CLI POSTs a full rescan of its local session logs every 30 minutes. This Worker implements the official server's submission contract and merge semantics, stores the full usage matrix in D1, and exposes a filterable read API for the personal site.
+Each machine runs `tokens serve` with `TOKENS_API_URL=https://tokens.lkwplus.com`; the CLI POSTs a full rescan of its local session logs every 30 minutes. This Worker implements the official server's submission contract and merge semantics, stores the full usage matrix in D1, and serves one precomposed read endpoint for the personal site.
 
 Every accepted submission also (a) rewrites the precomposed `/api/site` payload in KV, (b) archives the raw payload to R2 (`raw/<deviceId>/latest.json` — submissions are full rescans, so the latest one reproduces the device's whole history), and (c) once per Asia/Shanghai day exports the usage tables to R2 (`backup/YYYY-MM-DD.json`), a long-term backup beyond D1's 30-day Time Travel. Submissions are the only write event, so no cron is needed.
 
@@ -21,7 +21,7 @@ One self-contained HTML file — no build step, no dependencies. The design toke
 
 ## Storage model
 
-Usage is stored at maximum granularity — one row per **(device, date, client, model, provider)** with the full token breakdown (`input`, `output`, `cache_read`, `cache_write`, `reasoning`), `messages`, `cost`, and the parser revision that produced it. Everything the read API serves is an aggregation of this matrix, so any view the CLI can produce locally (per client / model / provider / device / arbitrary date window) can be reproduced remotely.
+Usage is stored at maximum granularity — one row per **(device, date, client, model, provider)** with the full token breakdown (`input`, `output`, `cache_read`, `cache_write`, `reasoning`), `messages`, `cost`, and the parser revision that produced it. `/api/site` is an aggregation of this matrix, and the matrix keeps every raw id the CLIs reported, so any view the CLI can produce locally is still derivable here — through D1 rather than through an HTTP endpoint.
 
 Sidecar tables: `daily_activity` (per-day `activeTimeMs`), `devices` (name, CLI version, time metrics, MCP server list), `submissions` (audit log of accepted submissions, kept for 30 days — it answers "did the last report land, and on what cadence", a question only about recent history).
 
@@ -44,7 +44,7 @@ Ported from the official server (`web/src/app/api/submit/route.ts` + `lib/db/hel
 
 ### CLI-facing endpoints
 
-Every CLI endpoint requires `Authorization: Bearer $TOKENS_API_TOKEN`; the read API below is public.
+Every CLI endpoint requires `Authorization: Bearer $TOKENS_API_TOKEN`; the read endpoint below is public.
 
 | Endpoint | Used by | Description |
 |---|---|---|
@@ -56,44 +56,20 @@ Not implemented: the browser GitHub-OAuth device flow (`POST /api/auth/device[/p
 
 ### Public read endpoints (no auth; open CORS)
 
-`/api/site` is freshness-critical (it backs the live dashboard), so it never guesses with TTLs: `Cache-Control: no-cache` plus a strong `ETag` make browsers revalidate every load — a ~0-byte `304` while the data is unchanged, the new payload the moment a submission rewrote it (worst case ~30 s, KV's per-PoP cache). The aggregate endpoints carry a plain 5-minute browser cache; `/api/submissions` is uncached, being the log you refresh to check whether the last submission landed.
+There is one, and that is deliberate. `/api/site` is the view lkwplus.com/tokens consumes; this backend has no second consumer. A filterable aggregation API used to sit beside it — `/api/stats`, `/api/timeseries`, `/api/breakdown`, `/api/graph`, `/api/meta`, `/api/devices`, `/api/submissions`, 677 lines of query parsing and SQL — and nothing ever called it: the CLI computes those views locally from its own logs, and the dashboard reads the precomposed payload. It was a public surface maintained for hypothetical callers, so it went.
 
-Internal device ids are never exposed — public rows identify devices by display name, and the `device=` filter takes names. Model and provider rows on the aggregate endpoints are merged under **canonical ids** (per-effort variants like `claude-fable-5-thinking-max` merged into `claude-fable-5`; subscription-auth provider spellings like pi's `openai-codex` merged into `openai`), and canonical providers mean **model vendors**: rows whose client reported its own serving gateway as the provider (Zed's `zed.dev`, OpenCode's `opencode` / `opencode-go`) are re-attributed by model name with the same inference rules the CLI's cursor parser uses (a Claude model via Zed counts as `anthropic`, DeepSeek via OpenCode Go as `deepseek`, GLM via OpenCode zen as `zai`), while models the rules can't place (`composer-*`, `big-pickle`, ...) stay under the gateway id — rules + alias tables in `src/models.ts`. `/api/graph` keeps raw spellings as the full-fidelity export, and filters match raw ids. "Active days" count any activity, messages included (early-2025 Cursor logs carry message counts without token usage).
+Nothing about the stored data changed. The matrix is still one row per (device, date, client, model, provider) at full fidelity, and it is still reachable — `wrangler d1 execute tokens-usage --remote --command "..."` for ad-hoc questions, the R2 raw archives for each device's last full rescan, the daily R2 exports for point-in-time copies. What is gone is the HTTP surface, not the data or the ability to ask it anything.
 
-The four matrix endpoints (`/api/stats`, `/api/timeseries`, `/api/breakdown`, `/api/graph`) share one filter set, combinable freely:
+`/api/site` is freshness-critical, so it never guesses with TTLs: `Cache-Control: no-cache` plus a strong `ETag` make browsers revalidate every load — a ~0-byte `304` while the data is unchanged, the new payload the moment a submission rewrote it (worst case ~30 s, KV's per-PoP cache).
 
-- `from=YYYY-MM-DD`, `to=YYYY-MM-DD` — inclusive date bounds
-- `client=`, `model=`, `provider=` — comma-separated exact matches (raw ids), at most 20 values each (keeping the worst case far below D1's 100-bound-parameters-per-query limit)
-- `device=` — comma-separated device names
+Internal device ids never leave the Worker; rows identify devices by display name. Model and provider ids are canonicalized **before** aggregation (per-effort variants like `claude-fable-5-thinking-max` merged into `claude-fable-5`; subscription-auth provider spellings like pi's `openai-codex` merged into `openai`), which is what makes the per-day model slices agree with the `byModel` breakdown. Canonical providers mean **model vendors**: rows whose client reported its own serving gateway as the provider (Zed's `zed.dev`, OpenCode's `opencode` / `opencode-go`) are re-attributed by model name with the same inference rules the CLI's cursor parser uses (a Claude model via Zed counts as `anthropic`, DeepSeek via OpenCode Go as `deepseek`, GLM via OpenCode zen as `zai`), while models the rules can't place (`composer-*`, `big-pickle`, ...) stay under the gateway id — rules + alias tables in `src/models.ts`. D1 keeps the raw spellings either way, so none of this is lossy. "Active days" count any activity, messages included (early-2025 Cursor logs carry message counts without token usage).
 
-Every endpoint declares the parameters it supports and answers anything else with a `400`, error responses included in the CORS headers so a browser can read the reason. A filter that would otherwise be silently ignored — or a `limit` silently clamped — is a lie in the response, so out-of-range values are rejected rather than adjusted. `/api/meta` and `/api/devices` take no parameters; `/api/submissions` takes `limit` only. A known path with the wrong method answers `405` with `Allow`.
-
-Every aggregate row carries the full metric set: `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning`, `tokens` (sum of the five), `messages`, `cost`.
+Every breakdown row carries the full metric set: `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning`, `tokens` (sum of the five), `messages`, `cost`. A known path with the wrong method answers `405` with `Allow`; an unhandled failure answers `500` with a JSON body and full CORS, so a cross-origin reader sees the reason rather than a CORS error.
 
 | Endpoint | Description |
 |---|---|
 | `GET /api/site` | Precomposed dashboard view, one request for the whole page: per-range (`day`/`week`/`month`/`quarter`/`all`, where `day` is today in Asia/Shanghai — it backs the dashboard's Today section and is the only place the full metric set is split per model for a single day) totals + breakdowns (every row carries its usage span — `days`, `firstDate`, `lastDate`), the full daily series sliced **by provider, by client and by model** (canonical ids, `{tokens, cost}` each) with per-day `active` time, and the device inventory incl. CLI version, sessions, active-time metrics and MCP servers. Costs are rounded to microdollars. The whole payload is a view **as of today**: submissions may carry dates up to two days ahead (clock skew, timezones east of Asia/Shanghai), and those rows stay in D1 until their own day arrives rather than landing in a window that ends today. No filters; served from KV. The body carries `schemaVersion` — see [Cross-repo contract](#cross-repo-contract) |
-| `GET /api/stats` | Overview: `totals` (+ `activeDays`, `firstDate`, `lastDate`), `daily`, `byClient`, `byModel` (canonical, with `providers`), `byProvider`, `byDevice` (by name) |
-| `GET /api/timeseries?interval=day\|week\|month\|year&group=none\|client\|model\|provider\|device` | `{series: [{period, key?, ...metrics}]}`, optionally split by one dimension — e.g. `interval=day&group=client` powers stacked area charts |
-| `GET /api/breakdown?by=client,model&limit=` | Arbitrary multi-dimension rollup; `by` is any combination of `client`, `model`, `provider`, `device`, `date`, `month`, `year` (mirrors the CLI's `--group-by`); `limit` 1–10000 |
-| `GET /api/graph?year=YYYY` | The same `TokenContributionData` shape as a `tokens graph` export (`meta`, `summary`, `years`, `contributions` with per-client rows, `intensity` 0–4, `activeTimeMs`), reconstructed from the matrix — both the heatmap source and a full-fidelity export (raw model ids); filters apply, so per-client graphs work |
-| `GET /api/meta` | Distinct `clients`, `models` (raw + `canonical`, with provider), `providers`, device names, data `range`, `lastUpdatedAt` — for building filter UIs |
-| `GET /api/devices` | Device inventory: name, first/last seen, CLI version, time metrics, MCP servers, per-device totals |
-| `GET /api/submissions?limit=50` | Submission audit log (`mode`, `rowCount`, `changedDays`, CLI version) for checking report cadence — a rolling 30-day window; `limit` 1–500 |
 | `GET /api/health` | Liveness check (`/` serves the static homepage) |
-
-Examples:
-
-```sh
-# Per-client daily series for a stacked chart, last 30 days
-curl "https://tokens.lkwplus.com/api/timeseries?interval=day&group=client&from=2026-06-16"
-
-# Top models across cursor only
-curl "https://tokens.lkwplus.com/api/breakdown?by=model&client=cursor&limit=10"
-
-# 2026 contribution graph for the heatmap
-curl "https://tokens.lkwplus.com/api/graph?year=2026"
-```
 
 ### Cross-repo contract
 
@@ -140,7 +116,7 @@ TOKENS_API_URL=http://localhost:8787 tokens submit   # end-to-end with a real CL
 Tests run inside workerd via [`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/) against real (miniflare-backed) D1/KV/R2 bindings with migrations applied, so integration tests exercise the production code paths with no mocks:
 
 - **Unit** — merge engine (`test/merge.spec.ts`), payload validation (`test/payload.spec.ts`), model/provider canonicalization (`test/models.spec.ts`).
-- **Integration** (`test/worker.spec.ts`) — auth boundaries, the submit → merge → KV/R2 fan-out, idempotent resubmits, full-wipe delete semantics, the read API's query contract, the device-id privacy rule.
+- **Integration** (`test/worker.spec.ts`) — auth boundaries, the submit → merge → KV/R2 fan-out, idempotent resubmits, retention on both bounded stores, full-wipe delete semantics, and the error path (a thrown handler must answer JSON + CORS, not a bare 500).
 - **Producer contract** (`test/site.spec.ts`) — the `/api/site` shape, mirrored consumer-side by the homepage's decoder and fixture.
 
 ## Project layout
@@ -154,8 +130,6 @@ src/merge.ts             Per-day per-client merge engine (regression guard,
                          revision floors, authoritative coverage)
 src/submit.ts            Write path (atomic set-based D1 writes) + CLI-facing
                          endpoints; drives the KV site refresh and R2 archives
-src/read.ts              Public read API (one query parser + per-endpoint
-                         contracts)
 src/models.ts            Canonical model/provider ids (suffix rules + alias
                          tables; extend ALIASES for new spellings)
 src/site.ts              /api/site — precomposed, schema-versioned dashboard

@@ -1,17 +1,11 @@
 /**
- * Pure tests for canonical model/provider ids and aggregate-row merging —
- * the rules every aggregation endpoint (and /api/site) relies on to make
- * per-effort model variants and provider spellings agree.
+ * Pure tests for canonical model and provider ids — the rules /api/site
+ * applies before aggregating, which is what makes per-effort model
+ * variants and gateway provider spellings agree across its breakdowns.
  */
 
 import { describe, expect, it } from "vitest";
-import type { Metrics } from "../src/metrics";
-import {
-  canonicalModel,
-  canonicalProvider,
-  inferProviderFromModel,
-  mergeRows,
-} from "../src/models";
+import { canonicalModel, canonicalProvider, inferProviderFromModel } from "../src/models";
 
 describe("canonicalModel", () => {
   it("strips effort/thinking/serving-tier suffixes, repeatedly", () => {
@@ -107,87 +101,5 @@ describe("inferProviderFromModel", () => {
     expect(inferProviderFromModel("biglm")).toBeNull();
     expect(inferProviderFromModel("composer-2.5")).toBeNull();
     expect(inferProviderFromModel("big-pickle")).toBeNull();
-  });
-});
-
-const row = (
-  model: string,
-  tokens: number,
-  extra: Record<string, unknown> = {}
-): Metrics & { model: string } & Record<string, unknown> => ({
-  model,
-  input: tokens,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  reasoning: 0,
-  tokens,
-  messages: 1,
-  cost: tokens / 1000,
-  ...extra,
-});
-
-describe("mergeRows", () => {
-  it("sums metrics of rows sharing a canonical model and unions providers", () => {
-    const merged = mergeRows([
-      row("gpt-5-high", 100, { providers: "openai" }),
-      row("gpt-5", 50, { providers: "openai-codex,azure" }),
-    ]);
-    expect(merged).toHaveLength(1);
-    expect(merged[0].model).toBe("gpt-5");
-    expect(merged[0].tokens).toBe(150);
-    expect(merged[0].messages).toBe(2);
-    expect(merged[0].cost).toBeCloseTo(0.15);
-    expect(merged[0].providers).toBe("openai,azure");
-  });
-
-  it("scopes merging by groupBy (per-period timeseries rows)", () => {
-    type Series = Metrics & { model: string; period: string };
-    const merged = mergeRows<Series>(
-      [
-        { ...row("gpt-5-high", 100), period: "2026-07" },
-        { ...row("gpt-5", 10), period: "2026-06" },
-      ],
-      { groupBy: (r) => r.period }
-    );
-    expect(merged).toHaveLength(2);
-  });
-
-  it("canonicalizes an arbitrary field (providers)", () => {
-    type ProviderRow = Metrics & { provider: string };
-    const rows: ProviderRow[] = [
-      { ...row("x", 1), provider: "openai-codex" } as unknown as ProviderRow,
-      { ...row("x", 2), provider: "openai" } as unknown as ProviderRow,
-    ];
-    const merged = mergeRows(rows, { field: "provider", canonicalize: canonicalProvider });
-    expect(merged).toHaveLength(1);
-    expect(merged[0].provider).toBe("openai");
-    expect(merged[0].tokens).toBe(3);
-  });
-
-  it("re-attributes gateway providers in unioned lists by the row's model", () => {
-    const merged = mergeRows([
-      row("glm-4.7", 100, { providers: "opencode" }),
-      row("glm-4.7-max", 50, { providers: "zai" }),
-    ]);
-    expect(merged).toHaveLength(1);
-    expect(merged[0].model).toBe("glm-4.7");
-    expect(merged[0].providers).toBe("zai");
-  });
-
-  it("merges Cursor-prefixed grok into grok-4.5 under xai", () => {
-    const merged = mergeRows([
-      row("grok-4.5", 100, { providers: "xai" }),
-      row("cursor-grok-4.5", 50, { providers: "cursor" }),
-    ]);
-    expect(merged).toHaveLength(1);
-    expect(merged[0].model).toBe("grok-4.5");
-    expect(merged[0].tokens).toBe(150);
-    expect(merged[0].providers).toBe("xai");
-  });
-
-  it("keeps gateway providers on models the rules cannot place", () => {
-    const merged = mergeRows([row("big-pickle", 100, { providers: "opencode" })]);
-    expect(merged[0].providers).toBe("opencode");
   });
 });

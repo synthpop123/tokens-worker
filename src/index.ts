@@ -4,15 +4,23 @@
  * The write path implements the official server's submission contract and
  * merge semantics (per-device, per-day, per-client replace with regression
  * guard, parser-revision floors, authoritative clientManifest coverage).
- * The read path exposes the full usage matrix — (device, date, client,
- * model, provider) x (input, output, cacheRead, cacheWrite, reasoning,
- * messages, cost) — through filterable aggregation endpoints. The route
- * table below is the index; each handler module documents its own contract.
+ * It stores the full usage matrix — (device, date, client, model,
+ * provider) x (input, output, cacheRead, cacheWrite, reasoning, messages,
+ * cost) — in D1. The route table below is the index; each handler module
+ * documents its own contract.
+ *
+ * There is exactly one read endpoint, and that is the point: /api/site is
+ * the view lkwplus.com/tokens consumes, and this backend has no second
+ * consumer to generalize for. A filterable aggregation API once sat here
+ * too (stats / timeseries / breakdown / graph / meta / devices /
+ * submissions) — 677 lines answering questions nobody asked it, since
+ * the CLI computes them locally and the dashboard reads the precomposed
+ * payload. The matrix it queried is still in D1, still complete, and
+ * still reachable by `wrangler d1 execute`, the R2 raw archives and the
+ * daily exports; what went away is a public surface with no caller.
  *
  * Reads are public (it is just usage data) and open to any origin. Writes
- * need the bearer token. Internal device ids are never exposed — not on
- * the public endpoints and, since /api/me/stats was removed, nowhere at
- * all.
+ * need the bearer token. Internal device ids never leave the Worker.
  *
  * Every accepted submission refreshes the precomposed /api/site payload in
  * KV and, once per Asia/Shanghai day, exports the usage tables to R2 — no
@@ -29,15 +37,6 @@ import type { Env } from "./http";
 import { json, CORS_HEADERS } from "./http";
 import { handleSubmit, handleAuthToken, handleDeleteSubmittedData } from "./submit";
 import { handleSite } from "./site";
-import {
-  handleStats,
-  handleTimeseries,
-  handleBreakdown,
-  handleGraph,
-  handleMeta,
-  handleDevices,
-  handleSubmissions,
-} from "./read";
 
 export type { Env };
 
@@ -58,16 +57,8 @@ const ROUTES = new Map<string, Handler>([
   ["POST /api/submit", handleSubmit],
   ["DELETE /api/settings/submitted-data", handleDeleteSubmittedData],
   ["GET /api/auth/token", handleAuthToken],
-  // Public reads: the precomposed dashboard view (site.ts) and the
-  // filterable aggregation endpoints (read.ts).
+  // Public reads: the precomposed dashboard view, and a liveness check.
   ["GET /api/site", handleSite],
-  ["GET /api/stats", handleStats],
-  ["GET /api/timeseries", handleTimeseries],
-  ["GET /api/breakdown", handleBreakdown],
-  ["GET /api/graph", handleGraph],
-  ["GET /api/meta", handleMeta],
-  ["GET /api/devices", handleDevices],
-  ["GET /api/submissions", handleSubmissions],
   ["GET /api/health", () => json({ service: "tokens-usage", ok: true }, 200, CORS_HEADERS)],
 ]);
 

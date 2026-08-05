@@ -2,12 +2,12 @@
  * The metric set — the eight numbers every usage row carries — in the
  * three forms the Worker needs it: a TypeScript shape, the SQL that
  * projects it out of the usage matrix, and the helpers that fold rows
- * into it. Declaring it once is what keeps `/api/site` (aggregated in JS)
- * and the read API (aggregated in SQL) reporting the same numbers under
- * the same names.
+ * into it. Declaring it once is what keeps the write path's response
+ * metrics and `/api/site` reporting the same numbers under the same
+ * names.
  *
  * Every query that interpolates these fragments aliases `daily_usage`
- * as `u` and, where a device name is selected, `devices` as `d`.
+ * as `u`.
  */
 
 export interface Metrics {
@@ -55,9 +55,6 @@ export const METRICS_SQL = `
 export const ACTIVE_DAYS_SQL = `count(DISTINCT CASE
   WHEN ${TOKENS_SQL} > 0 OR u.messages > 0 THEN u.date END) AS activeDays`;
 
-/** Public device label — internal device ids never leave the Worker. */
-export const DEVICE_NAME_SQL = `coalesce(nullif(trim(d.name), ''), 'Unnamed device')`;
-
 export function emptyMetrics(): Metrics {
   return {
     input: 0,
@@ -73,16 +70,6 @@ export function emptyMetrics(): Metrics {
 
 export function addMetrics(target: Metrics, row: Metrics): void {
   for (const key of METRIC_KEYS) target[key] += row[key];
-}
-
-/** Read a metric row out of D1, where sum() is NULL over an empty set. */
-export function metricsFrom(row: Record<string, unknown> | undefined): Metrics {
-  const metrics = emptyMetrics();
-  for (const key of METRIC_KEYS) {
-    const value = row?.[key];
-    if (typeof value === "number") metrics[key] = value;
-  }
-  return metrics;
 }
 
 export const byTokensDesc = (a: Metrics, b: Metrics): number => b.tokens - a.tokens;

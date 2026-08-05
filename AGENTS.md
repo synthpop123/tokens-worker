@@ -85,8 +85,18 @@ push: the Workers Builds log prints the executed build command, so a
   self-contained page documenting the architecture and API, with live
   totals from `/api/site`. Assets match before the router runs. When
   endpoints or merge semantics change, update it with the README.
-- The public read API serves a static `Access-Control-Allow-Origin: *`
-  (`CORS_HEADERS` in `src/http.ts`), error responses included. Never make
+- There is exactly one public read endpoint, `/api/site`, and that is a
+  decision rather than a gap. A filterable aggregation API (stats /
+  timeseries / breakdown / graph / meta / devices / submissions, 677
+  lines) was removed once it was clear nothing called it: the CLI
+  computes those views locally and the dashboard reads the precomposed
+  payload. The matrix is untouched in D1 at full fidelity, so ad-hoc
+  questions go to `wrangler d1 execute`, not to a new endpoint. Do not
+  re-add a general query surface without a caller that exists.
+- Read responses serve a static `Access-Control-Allow-Origin: *`
+  (`CORS_HEADERS` in `src/http.ts`), error responses included — the
+  router's top-level catch exists so even an unhandled throw answers
+  JSON + CORS rather than the runtime's bare 500. Never make
   response headers depend on the request's `Origin`: reads are
   browser-cacheable, and an Origin-dependent variant poisons the HTTP
   cache (a same-origin fetch of `/api/site` on this Worker's homepage
