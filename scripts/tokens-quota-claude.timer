@@ -1,13 +1,19 @@
 [Unit]
-Description=report the Claude subscription quota every 30 minutes
+Description=report the Claude subscription quota every hour
 
 [Timer]
-# Same cadence as the Codex leg, offset from it: the two are separate
-# reports to separate keys, and there is nothing to gain from having them
-# wake together.
+# Deliberately slower than the Codex leg. Every wake is a real request to
+# a vendor endpoint, and automated traffic from a non-official client is
+# worth keeping thin — the quota card is a convenience, not something to
+# spend goodwill on. Hourly still gives the 5-hour window a few sampling
+# points, and the card states its own age when it lags.
+#
+# Note this does not halve the total: the OAuth refresh is driven by the
+# ~12h token lifetime, not by this interval, so it stays at ~2/day either
+# way. What halves is the usage query.
 OnBootSec=5min
-OnUnitActiveSec=30min
-RandomizedDelaySec=2min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
 Persistent=true
 
 [Install]

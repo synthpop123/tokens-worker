@@ -86,9 +86,18 @@ vendors, and reaching them needs OAuth credentials — so the credentials are
 what decides the architecture.
 
 They never leave the machine that holds them. **OracleARM** — the host that
-already runs `tokens serve` — reports both plans on their own 30-minute
-systemd user timers, and the Worker stores no vendor secret, runs no
-scheduled job, and sees percentages and timestamps and nothing else.
+already runs `tokens serve` — reports each plan on its own systemd user
+timer, and the Worker stores no vendor secret, runs no scheduled job, and
+sees percentages and timestamps and nothing else.
+
+The cadences differ on purpose. Codex reports every 30 minutes; **Claude
+every hour**, because every wake is a real request to a vendor endpoint and
+automated traffic from a non-official client is worth keeping thin — a
+convenience card is not something to spend goodwill on. Note that halving
+the interval does not halve the traffic: the OAuth refresh below is driven
+by the token's ~12-hour lifetime rather than by the timer, so it stays at
+roughly twice a day either way. What the interval controls is the usage
+query — 24 a day for Claude, 48 for Codex.
 
 | Plan | Collector | How it reaches the vendor |
 |---|---|---|
