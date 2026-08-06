@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Report the Codex subscription's rate-limit snapshot to POST /api/quota.
+# Report the Codex subscription's rate-limit snapshot to /api/quota/codex.
 #
 # `tokens codex status --json` asks ChatGPT's usage API using the local
 # ~/.codex/auth.json, refreshing the OAuth token if it has expired. So the
@@ -9,7 +9,9 @@
 #
 # Runs on one host (OracleARM, which already runs `tokens serve`) under
 # the systemd user timer beside this file. Quota is account-wide, so a
-# second reporter would add nothing but a race.
+# second reporter would add nothing but a race. The Claude leg is its own
+# script and its own timer, reporting to its own key — see
+# report-claude-quota.py for why they must fail independently.
 #
 # Silent on success, because a timer that logs every 30 minutes is a
 # journal nobody reads. Any failure exits non-zero with a reason, which
@@ -21,7 +23,7 @@ API_URL="${TOKENS_API_URL:-https://tokens.lkwplus.com}"
 CREDENTIALS="${TOKENS_CREDENTIALS:-$HOME/.config/tokens/credentials.json}"
 
 die() {
-  echo "report-quota: $1" >&2
+  echo "report-codex-quota: $1" >&2
   exit 1
 }
 
@@ -42,7 +44,7 @@ snapshot="$(tokens codex status --json)" || die "tokens codex status failed"
 
 curl --fail-with-body --silent --show-error \
   --retry 2 --retry-delay 5 --max-time 30 \
-  --request POST "$API_URL/api/quota" \
+  --request POST "$API_URL/api/quota/codex" \
   --header "Authorization: Bearer $token" \
   --header 'Content-Type: application/json' \
   --data-binary "$snapshot" \

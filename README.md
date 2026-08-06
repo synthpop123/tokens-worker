@@ -9,7 +9,7 @@ Self-hosted backend for the [`tokens`](https://github.com/missuo/tokens) CLI, ru
 
 Each machine runs `tokens serve` with `TOKENS_API_URL=https://tokens.lkwplus.com`; the CLI POSTs a full rescan of its local session logs every 30 minutes. This Worker implements the official server's submission contract and merge semantics, stores the full usage matrix in D1, and serves one precomposed read endpoint for the personal site.
 
-Every accepted submission also (a) rewrites the precomposed `/api/site` payload in KV, (b) archives the raw payload to R2 (`raw/<deviceId>/latest.json` — submissions are full rescans, so the latest one reproduces the device's whole history), and (c) once per Asia/Shanghai day exports the usage tables to R2 (`backup/YYYY-MM-DD.json`), a long-term backup beyond D1's 30-day Time Travel. One other write reaches the same payload — the subscription quota snapshot, reported by a collector on one host (see [Quota collection](#quota-collection)). Both are events, so no cron is needed.
+Every accepted submission also (a) rewrites the precomposed `/api/site` payload in KV, (b) archives the raw payload to R2 (`raw/<deviceId>/latest.json` — submissions are full rescans, so the latest one reproduces the device's whole history), and (c) once per Asia/Shanghai day exports the usage tables to R2 (`backup/YYYY-MM-DD.json`), a long-term backup beyond D1's 30-day Time Travel. Two other writes reach the same payload — one per subscription quota, reported by collectors on one host (see [Quota collection](#quota-collection)). All are events, so no cron is needed.
 
 Everything on that fan-out is bounded in size, deliberately: the raw archive uses one fixed key per device, the daily exports are pruned past 180 days, and the submission audit log is a rolling 30-day window trimmed by the same batch that appends to it. Devices rescan every 30 minutes whether or not anything changed — over 80% of submissions write no usage rows at all — so anything that accumulated per submission would grow forever on cadence alone, and anything copied into a fresh daily object would grow with the *square* of time.
 
@@ -49,7 +49,7 @@ Every CLI endpoint requires `Authorization: Bearer $TOKENS_API_TOKEN`; the read 
 | Endpoint | Used by | Description |
 |---|---|---|
 | `POST /api/submit` | `tokens submit` / `serve` / `autosubmit` | Full submission payload; responds `{success, submissionId, username, metrics, mode, warnings?}` |
-| `POST /api/quota` | `scripts/report-quota.sh` | Subscription rate-limit snapshot — see [Quota collection](#quota-collection); responds `{success, capturedAt, provider}` |
+| `POST /api/quota/{codex,claude}` | `scripts/report-*-quota.*` | One subscription's rate-limit snapshot — see [Quota collection](#quota-collection); responds `{success, provider, capturedAt}` |
 | `DELETE /api/settings/submitted-data` | `tokens delete-submitted-data` | Wipes all stored data across all three stores — D1 tables, every R2 object (raw archives and daily backups reproduce submitted data, so they go too), and the KV site payload, recomposed synchronously so the dashboard is clean before the CLI hears "success"; responds `{deleted, deletedSubmissions}` |
 | `GET /api/auth/token` | `tokens login --token tt_...` | Token validation; responds `{user: {username}}` |
 
@@ -69,7 +69,7 @@ Every breakdown row carries the full metric set: `input`, `output`, `cacheRead`,
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/site` | Precomposed dashboard view, one request for the whole page: the reported `quota` snapshot (`null` until a collector has spoken), per-range (`day`/`week`/`month`/`quarter`/`all`, where `day` is today in Asia/Shanghai — it backs the dashboard's Today section and is the only place the full metric set is split per model for a single day) totals + breakdowns (every row carries its usage span — `days`, `firstDate`, `lastDate`; model rows name the `providers` that served them, and **client and provider rows carry `models`** — the client × model and provider × model cells, the slices the marginals cannot reconstruct), the full daily series sliced **by provider, by client and by model** (canonical ids, `{tokens, cost}` each) with per-day `active` time, and the device inventory incl. CLI version, sessions, active-time metrics and MCP servers. Costs are rounded to microdollars. The whole payload is a view **as of today**: submissions may carry dates up to two days ahead (clock skew, timezones east of Asia/Shanghai), and those rows stay in D1 until their own day arrives rather than landing in a window that ends today. No filters; served from KV. The body carries `schemaVersion` — see [Cross-repo contract](#cross-repo-contract) |
+| `GET /api/site` | Precomposed dashboard view, one request for the whole page: the reported `quota` plans (one per subscription, each with its own `capturedAt`; empty until a collector has spoken), per-range (`day`/`week`/`month`/`quarter`/`all`, where `day` is today in Asia/Shanghai — it backs the dashboard's Today section and is the only place the full metric set is split per model for a single day) totals + breakdowns (every row carries its usage span — `days`, `firstDate`, `lastDate`; model rows name the `providers` that served them, and **client and provider rows carry `models`** — the client × model and provider × model cells, the slices the marginals cannot reconstruct), the full daily series sliced **by provider, by client and by model** (canonical ids, `{tokens, cost}` each) with per-day `active` time, and the device inventory incl. CLI version, sessions, active-time metrics and MCP servers. Costs are rounded to microdollars. The whole payload is a view **as of today**: submissions may carry dates up to two days ahead (clock skew, timezones east of Asia/Shanghai), and those rows stay in D1 until their own day arrives rather than landing in a window that ends today. No filters; served from KV. The body carries `schemaVersion` — see [Cross-repo contract](#cross-repo-contract) |
 | `GET /api/health` | Liveness check (`/` serves the static homepage) |
 
 ### Cross-repo contract
@@ -80,61 +80,90 @@ The two repos deploy independently, so a bump has no atomic moment — whichever
 
 ## Quota collection
 
-The dashboard also answers a question no session log can: how much of the
-Codex subscription's weekly window is already spent. That number lives at
-the vendor, and reaching it needs an OAuth credential — so the credential
-is the thing that decides the architecture.
+The dashboard also answers a question no session log can: how much of each
+subscription's rate-limit window is already spent. Those numbers live at the
+vendors, and reaching them needs OAuth credentials — so the credentials are
+what decides the architecture.
 
-It never leaves the machine that holds it. **OracleARM** — the host that
-already runs `tokens serve` — runs `scripts/report-quota.sh` on a 30-minute
-systemd user timer; the script shells out to `tokens codex status --json`
-(which reads the local `~/.codex/auth.json`, refreshes the OAuth token when
-it has expired, and calls ChatGPT's usage API) and POSTs the result to
-`/api/quota`. The Worker stores no vendor secret, runs no scheduled job,
-and sees percentages and timestamps and nothing else.
+They never leave the machine that holds them. **OracleARM** — the host that
+already runs `tokens serve` — reports both plans on their own 30-minute
+systemd user timers, and the Worker stores no vendor secret, runs no
+scheduled job, and sees percentages and timestamps and nothing else.
 
-That output belongs to a third-party CLI, so **nothing is passed through**.
-`src/quota.ts` narrows it by hand into the shape `/api/site` publishes —
-which is where the account's email address is dropped, since that endpoint
-is public and unauthenticated, and where an upstream field rename becomes a
-400 instead of a silent homepage change. The snapshot is a full overwrite,
-so a plan change cannot leave a stale window behind.
+| Plan | Collector | How it reaches the vendor |
+|---|---|---|
+| Codex | `scripts/report-codex-quota.sh` | Shells out to `tokens codex status --json`, which reads `~/.codex/auth.json`, refreshes the OAuth token if it must, and calls ChatGPT's usage API |
+| Claude | `scripts/report-claude-quota.py` | Reads `~/.claude/.credentials.json` and calls `api.anthropic.com/api/oauth/usage` directly — there is no `tokens claude status`, so the script keeps the credential alive itself |
 
-It is stored in **KV, not D1**: one key, rewritten in place, constant in
-size forever. A percentage a collector can re-fetch in a second is not
-history, and the fan-out's rule is that nothing accumulates on cadence. For
-the same reason it is not copied into the daily R2 export — but it *is*
-deleted by `DELETE /api/settings/submitted-data`, because it names the
-account's plan.
+**The two legs are independent, deliberately.** Each posts to its own route
+and lands in its own KV key (`quota:openai`, `quota:anthropic`), and each
+plan carries its own `capturedAt`. A single shared snapshot would make them
+a package deal: an expired Claude credential would take the Codex card down
+with it on the next report, and a collector would have to succeed at
+everything to say anything. Separate keys mean a broken leg goes stale
+alone, visibly.
 
-Quota is account-wide, so exactly one host reports it; a second would add a
-race and no information. Which also means the payload can go stale silently
+Each vendor's body is its own shape and **nothing is passed through**.
+`src/quota.ts` narrows each by hand into the shape `/api/site` publishes —
+which is where the account's identity is dropped, since that endpoint is
+public and unauthenticated, and where an upstream field rename becomes a
+400 instead of a silent homepage change. A report is a full overwrite of
+that plan, so a tier change cannot leave a stale window behind.
+
+Plans are stored in **KV, not D1**: one key each, rewritten in place,
+constant in size forever. A percentage a collector can re-fetch in a second
+is not history, and the fan-out's rule is that nothing accumulates on
+cadence. For the same reason they are not copied into the daily R2 export —
+but they *are* deleted by `DELETE /api/settings/submitted-data`, because
+they name the account's subscriptions.
+
+Quota is account-wide, so exactly one host reports each plan; a second would
+add a race and no information. Which also means a card can go stale silently
 if that host sleeps — `capturedAt` (the *server's* clock, never the
 collector's) is the reader's only defence, so it always ships, and the
-dashboard ages the card by it rather than presenting an undated number as
-current. Reset times are absolute, so a window that has since rolled over
-reads as reset rather than as a stale percentage.
+dashboard ages each card by its own. Reset times are absolute, so a window
+that has since rolled over reads as reset rather than as a stale percentage.
 
-Installing it on a fresh host, as the `agent` user:
+### The Claude credential
+
+Anthropic **rotates the refresh token on every exchange** — the old one dies
+the moment a new one is issued — so `report-claude-quota.py` treats the
+credential file as something it can destroy. It refreshes only when the
+access token is within ten minutes of expiry (a working token is never
+traded in), writes the new pair back *before* using it, atomically
+(temp file in the same directory → `fsync` → `os.replace`, mode 0600), and
+preserves every other field in the file, which belongs to Claude Code.
+
+The access token lasts about twelve hours. On a host that runs `claude`
+daily this would never matter — Claude Code refreshes it — but OracleARM
+does not, which is exactly why the script has to. The refresh token is good
+for ~30 days from each use, so the timer keeps itself alive; if it ever
+stops for longer than that, log in again on that host.
+
+### Installing on a fresh host
+
+As the `agent` user:
 
 ```sh
-install -Dm755 scripts/report-quota.sh ~/.local/bin/report-quota.sh
-install -Dm644 scripts/tokens-quota.{service,timer} -t ~/.config/systemd/user/
-systemctl --user daemon-reload && systemctl --user enable --now tokens-quota.timer
-systemctl --user start tokens-quota.service   # report once, now
+install -Dm755 scripts/report-codex-quota.sh ~/.local/bin/report-codex-quota.sh
+install -Dm755 scripts/report-claude-quota.py ~/.local/bin/report-claude-quota.py
+install -Dm644 scripts/tokens-quota-*.{service,timer} -t ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now tokens-quota-codex.timer tokens-quota-claude.timer
+systemctl --user start tokens-quota-codex.service tokens-quota-claude.service
 ```
 
 The bearer token is read from the CLI's own `~/.config/tokens/credentials.json`
-rather than copied into the unit file, so there is one thing to rotate. The
-timer needs `loginctl enable-linger` for the user, which `tokens serve`
+rather than copied into the unit files, so there is one thing to rotate. The
+timers need `loginctl enable-linger` for the user, which `tokens serve`
 already required.
 
 ## Security & privacy
 
 - **The only secret is `TOKENS_API_TOKEN`** (the write-path bearer token). It lives as a Worker secret in Cloudflare and in the gitignored `.dev.vars` locally — never committed. The auth check hashes both sides and compares with the runtime's timing-safe primitive.
 - **`wrangler.jsonc` carries resource identifiers, not credentials** — the D1 `database_id` and KV namespace `id` only name the bindings; access requires a Cloudflare API token that is not in the repo.
-- **Reads are public by design** — aggregate usage numbers for a personal dashboard. Internal device ids never leave the Worker at all: public rows identify devices by display name (an integration test pins this), raw payloads / backups stay in the private R2 bucket, and the one endpoint that ever returned ids (`GET /api/me/stats`, whose consumer the CLI dropped in v27) has been removed. The quota snapshot is narrowed the same way: the vendor reports the account's email address with it, and it is dropped at the door — `test/quota.spec.ts` asserts the string never appears in the public body.
-- **No vendor credential lives here.** The quota number needs OAuth against ChatGPT; that happens on the collecting host, which reports the finished percentages. There is nothing to steal from the Worker that would grant access to the subscription.
+- **Reads are public by design** — aggregate usage numbers for a personal dashboard. Internal device ids never leave the Worker at all: public rows identify devices by display name (an integration test pins this), raw payloads / backups stay in the private R2 bucket, and the one endpoint that ever returned ids (`GET /api/me/stats`, whose consumer the CLI dropped in v27) has been removed. Quota plans are narrowed the same way: the vendors report account identity alongside the numbers, and it is dropped at the door — `test/quota.spec.ts` asserts those strings never appear in the public body.
+- **No vendor credential lives here.** The quota numbers need OAuth against ChatGPT and Anthropic; that happens on the collecting host, which reports finished percentages. There is nothing to steal from the Worker that would grant access to either subscription.
 - **CORS is a static wildcard, never Origin-derived.** Reads are cacheable, and an Origin-dependent header on a cacheable response poisons caches (`src/http.ts` documents the incident).
 
 ## Setup & deploy

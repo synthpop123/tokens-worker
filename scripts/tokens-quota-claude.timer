@@ -1,0 +1,14 @@
+[Unit]
+Description=report the Claude subscription quota every 30 minutes
+
+[Timer]
+# Same cadence as the Codex leg, offset from it: the two are separate
+# reports to separate keys, and there is nothing to gain from having them
+# wake together.
+OnBootSec=5min
+OnUnitActiveSec=30min
+RandomizedDelaySec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

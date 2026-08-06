@@ -44,7 +44,7 @@ import type { Env } from "./http";
 import { json, CORS_HEADERS } from "./http";
 import { handleSubmit, handleAuthToken, handleDeleteSubmittedData } from "./submit";
 import { handleQuota } from "./quota";
-import { handleSite } from "./site";
+import { handleSite, QUOTA_PROVIDERS } from "./site";
 
 export type { Env };
 
@@ -65,8 +65,12 @@ const ROUTES = new Map<string, Handler>([
   ["POST /api/submit", handleSubmit],
   ["DELETE /api/settings/submitted-data", handleDeleteSubmittedData],
   ["GET /api/auth/token", handleAuthToken],
-  // Reported by the quota collector, not by the CLI itself (see quota.ts).
-  ["POST /api/quota", handleQuota],
+  // Reported by the quota collectors, not by the CLI itself (see
+  // quota.ts). One route per subscription, derived from the provider
+  // table so an unknown one 404s here rather than inside the handler.
+  ...[...QUOTA_PROVIDERS.keys()].map(
+    (id) => [`POST /api/quota/${id}`, handleQuota] as [string, Handler]
+  ),
   // Public reads: the precomposed dashboard view, and a liveness check.
   ["GET /api/site", handleSite],
   ["GET /api/health", () => json({ service: "tokens-usage", ok: true }, 200, CORS_HEADERS)],

@@ -20,7 +20,8 @@ describe("auth boundaries", () => {
       () => call("/api/settings/submitted-data", { method: "DELETE" }),
     ],
     ["GET /api/auth/token", () => call("/api/auth/token")],
-    ["POST /api/quota", () => call("/api/quota", { method: "POST", body: "{}" })],
+    ["POST /api/quota/codex", () => call("/api/quota/codex", { method: "POST", body: "{}" })],
+    ["POST /api/quota/claude", () => call("/api/quota/claude", { method: "POST", body: "{}" })],
   ])("%s rejects missing tokens", async (_name, request) => {
     const response = await request();
     expect(response.status).toBe(401);

@@ -12,7 +12,14 @@ import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { isoToday } from "../src/http";
 import { SITE_VERSION } from "../src/site";
-import { call, reportQuota, reset, submissionPayload, submit } from "./helpers";
+import {
+  call,
+  reportClaudeQuota,
+  reportQuota,
+  reset,
+  submissionPayload,
+  submit,
+} from "./helpers";
 
 beforeEach(() => reset());
 
@@ -73,33 +80,30 @@ function expectSiteContract(site: Record<string, any>): void {
     }
   }
 
-  // The one reported field: null until a collector has spoken, and a
-  // dated snapshot after (the endpoint's own spec covers the narrowing).
-  expect(site.quota === null || typeof site.quota === "object", "quota").toBe(true);
-  if (site.quota !== null) {
-    expect(Number.isFinite(Date.parse(site.quota.capturedAt)), "quota.capturedAt").toBe(true);
-    expect(Array.isArray(site.quota.plans)).toBe(true);
-    for (const plan of site.quota.plans) {
-      expect(typeof plan.provider).toBe("string");
-      expect(typeof plan.label).toBe("string");
-      expect(plan.plan === null || typeof plan.plan === "string", "quota.plans.plan").toBe(true);
-      expect(Array.isArray(plan.windows) && plan.windows.length > 0, "quota.plans.windows").toBe(
-        true
-      );
-      for (const window of plan.windows) {
-        expect(typeof window.label).toBe("string");
-        expect(typeof window.usedPercent).toBe("number");
-        expect(
-          window.resetsAt === null || typeof window.resetsAt === "string",
-          "quota.plans.windows.resetsAt"
-        ).toBe(true);
-      }
+  // The one reported list: empty until a collector has spoken, and one
+  // dated plan per subscription after (the endpoint's own spec covers
+  // the narrowing). Each plan dates itself — two collectors on their own
+  // timers are two different answers to "how old is this".
+  expect(Array.isArray(site.quota), "quota").toBe(true);
+  for (const plan of site.quota) {
+    expect(typeof plan.provider).toBe("string");
+    expect(typeof plan.label).toBe("string");
+    expect(plan.plan === null || typeof plan.plan === "string", "quota.plan").toBe(true);
+    expect(Number.isFinite(Date.parse(plan.capturedAt)), "quota.capturedAt").toBe(true);
+    expect(Array.isArray(plan.windows) && plan.windows.length > 0, "quota.windows").toBe(true);
+    for (const window of plan.windows) {
+      expect(typeof window.label).toBe("string");
+      expect(typeof window.usedPercent).toBe("number");
       expect(
-        Array.isArray(plan.resetCredits) &&
-          plan.resetCredits.every((at: unknown) => typeof at === "string"),
-        "quota.plans.resetCredits"
+        window.resetsAt === null || typeof window.resetsAt === "string",
+        "quota.windows.resetsAt"
       ).toBe(true);
     }
+    expect(
+      Array.isArray(plan.resetCredits) &&
+        plan.resetCredits.every((at: unknown) => typeof at === "string"),
+      "quota.resetCredits"
+    ).toBe(true);
   }
 
   expect(Array.isArray(site.daily)).toBe(true);
@@ -148,15 +152,16 @@ function expectSiteContract(site: Record<string, any>): void {
 }
 
 describe("GET /api/site", () => {
-  // The contract above accepts a null quota, which is what every other
-  // test in this file produces — so one case has to populate it, or the
-  // shape of a reported snapshot would go unpinned on this side.
-  it("holds the same contract with a quota snapshot reported", async () => {
+  // The contract above accepts an empty quota list, which is what every
+  // other test in this file produces — so one case has to populate it,
+  // or a reported plan's shape would go unpinned on this side.
+  it("holds the same contract with both quota plans reported", async () => {
     await submit();
     await reportQuota();
+    await reportClaudeQuota();
     const site = (await (await call("/api/site")).json()) as Record<string, any>;
     expectSiteContract(site);
-    expect(site.quota.plans).toHaveLength(1);
+    expect(site.quota).toHaveLength(2);
   });
 
   it("serves the versioned dashboard contract after a submission", async () => {

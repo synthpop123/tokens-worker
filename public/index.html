@@ -652,8 +652,8 @@
   <section id="architecture">
     <h2>Architecture</h2>
     <p>
-      One Worker, three bindings. Writes are events — submissions, plus one reported quota
-      snapshot — so they drive everything downstream and there is no cron. Reads never queue
+      One Worker, three bindings. Writes are events — submissions, plus one reported snapshot
+      per subscription — so they drive everything downstream and there is no cron. Reads never queue
       behind writes, and never touch D1 at all in the steady state: the dashboard payload is
       precomposed into KV and served with an ETag so browsers revalidate instead of guessing.
     </p>
@@ -676,17 +676,18 @@
     <div class="lane">
       <h3 class="label">Quota · every 30 minutes, one host</h3>
       <p class="flow">
-        <span class="node">ChatGPT usage API</span><span class="arr" aria-hidden="true">→</span>
+        <span class="node">ChatGPT / Anthropic</span><span class="arr" aria-hidden="true">→</span>
         <span class="node">OracleARM</span><span class="arr" aria-hidden="true">→</span>
-        <span class="node">POST /api/quota</span><span class="arr" aria-hidden="true">→</span>
-        <span class="node" data-store>KV · quota snapshot</span>
+        <span class="node">POST /api/quota/:plan</span><span class="arr" aria-hidden="true">→</span>
+        <span class="node" data-store>KV · one key per plan</span>
       </p>
       <p class="cap">
-        How much of the Codex plan’s weekly window is spent — a number no session log contains.
-        The OAuth credential it needs stays on the collecting host, which reports finished
-        percentages; this Worker holds no vendor secret and runs no scheduled job. The output of a
-        third-party CLI is narrowed by hand into the payload’s own shape, which is where the
-        account’s email address is dropped. Quota is account-wide, so exactly one host reports it.
+        How much of each subscription’s rate-limit window is spent — a number no session log
+        contains. The OAuth credentials stay on the collecting host, which reports finished
+        percentages; this Worker holds no vendor secret and runs no scheduled job. Each vendor’s
+        body is narrowed by hand into the payload’s own shape, which is where account identity is
+        dropped. The two legs are separate reports to separate keys, each dated by its own
+        <code>capturedAt</code>, so an expired credential on one cannot take the other’s card down.
       </p>
     </div>
 
@@ -750,7 +751,7 @@
         <tr>
           <td><code>SITE_CACHE</code></td>
           <td>Workers KV</td>
-          <td>Precomposed <code>/api/site</code> payload, rewritten on every accepted submission, plus the reported quota snapshot it carries.</td>
+          <td>Precomposed <code>/api/site</code> payload, rewritten on every accepted submission, plus one reported quota plan per subscription.</td>
         </tr>
         <tr>
           <td><code>ARCHIVE</code></td>
@@ -895,13 +896,13 @@ npx wrangler d1 execute tokens-usage --remote \
       </li>
       <li class="ep">
         <span class="method" data-m="POST">POST</span>
-        <button class="path" type="button" data-copy="/api/quota" aria-label="Copy https://tokens.lkwplus.com/api/quota">/api/quota
+        <button class="path" type="button" data-copy="/api/quota/codex" aria-label="Copy https://tokens.lkwplus.com/api/quota/codex">/api/quota/:plan
           <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
           <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
         </button>
         <span class="ep-aside">auth</span>
         <div class="ep-body">
-          <p>Subscription rate-limit snapshot, the verbatim output of <code>tokens codex status --json</code> reported by <code>scripts/report-quota.sh</code>. Narrowed into the payload’s own shape — windows, reset times and unspent reset credits — and stored as a full overwrite, so a plan change leaves no stale window. Responds with <code>{success, capturedAt, provider}</code>.</p>
+          <p>One subscription’s rate-limit snapshot: <code>codex</code> takes the verbatim output of <code>tokens codex status --json</code>, <code>claude</code> takes Anthropic’s <code>/api/oauth/usage</code> response. Each is narrowed into the payload’s own shape — windows, reset times and unspent reset credits — and overwrites that plan’s key alone. Responds with <code>{success, provider, capturedAt}</code>.</p>
         </div>
       </li>
       <li class="ep">
@@ -912,7 +913,7 @@ npx wrangler d1 execute tokens-usage --remote \
         </button>
         <span class="ep-aside">auth</span>
         <div class="ep-body">
-          <p>Wipes all stored data across all three stores (<code>tokens delete-submitted-data</code>): the D1 tables, every R2 archive and backup, the reported quota snapshot, and the KV site payload — recomposed before the response, so success means the public dashboard is already clean.</p>
+          <p>Wipes all stored data across all three stores (<code>tokens delete-submitted-data</code>): the D1 tables, every R2 archive and backup, every reported quota plan, and the KV site payload — recomposed before the response, so success means the public dashboard is already clean.</p>
         </div>
       </li>
       <li class="ep">

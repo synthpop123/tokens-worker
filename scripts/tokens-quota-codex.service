@@ -6,6 +6,6 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/bin/report-quota.sh
+ExecStart=%h/.local/bin/report-codex-quota.sh
 Environment=TOKENS_API_URL=https://tokens.lkwplus.com
 Environment=TZ=Asia/Shanghai

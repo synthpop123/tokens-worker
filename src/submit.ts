@@ -27,7 +27,7 @@ import {
   mergeDay,
   modelKey,
 } from "./merge";
-import { refreshSiteCache } from "./site";
+import { refreshSiteCache, wipeQuota } from "./site";
 import { ensureDailyBackup, wipeArchive } from "./backup";
 
 interface StoredUsageRow {
@@ -442,6 +442,7 @@ export async function handleDeleteSubmittedData(request: Request, env: Env): Pro
     env.DB.prepare(`DELETE FROM submissions`),
   ]);
   await wipeArchive(env);
-  await refreshSiteCache(env, null);
+  await wipeQuota(env);
+  await refreshSiteCache(env);
   return json({ deleted: n > 0, deletedSubmissions: n });
 }

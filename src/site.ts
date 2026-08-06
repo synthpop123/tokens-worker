@@ -52,28 +52,45 @@ import { canonicalModel, canonicalProvider } from "./models";
 // homepage's SITE_SCHEMA_VERSION and its committed /api/site fixture
 // (homepage: src/lib/client/tokens.ts + .test.ts).
 const SITE_KEY = "site";
-export const SITE_VERSION = 11;
+export const SITE_VERSION = 12;
 /** How long a PoP may serve its local copy of the KV entry before
  *  re-checking central storage — the global worst-case staleness after
  *  a submission rewrites the payload (30 is the API's minimum). */
 const KV_CACHE_TTL = 30;
 
 /**
- * The subscription-quota snapshot, in its own KV key beside the payload
- * it rides into. It is *reported*, not derived: no D1 table backs it,
- * because a percentage that a collector can re-fetch in a second is not
- * history worth storing — one key, overwritten in place, constant in
- * size forever. That is the same bound every other leg of the fan-out
- * carries, reached by never accumulating in the first place.
+ * Subscription quota is *reported*, not derived: no D1 table backs it,
+ * because a percentage a collector can re-fetch in a second is not
+ * history worth storing — one key per plan, overwritten in place,
+ * constant in size forever. That is the same bound every other leg of
+ * the fan-out carries, reached by never accumulating in the first place.
  *
- * Which also means the payload can lie by omission if the collector
- * stops: `capturedAt` is the reader's only defence, so it is composed
- * from the server clock at write time and always ships.
+ * **One key per provider, not one key for all of them.** Each plan is
+ * read from a different vendor through a different credential, so they
+ * fail independently: Codex goes through the tokens CLI, Claude through
+ * an OAuth token this Worker never sees. A single overwritten snapshot
+ * would make them a package deal — an expired Claude credential would
+ * take the Codex card down with it on the next report, and a collector
+ * would have to succeed at everything to say anything. Separate keys
+ * mean a broken leg goes stale alone, visibly, which is what
+ * `capturedAt` is for.
  */
-const QUOTA_KEY = "quota";
+const quotaKey = (provider: string) => `quota:${provider}`;
+
+/**
+ * The subscriptions this Worker will store, keyed by the id a collector
+ * reports. A Map, not an object: the key comes from a request body.
+ * `provider` is the canonical vendor id used everywhere else in the
+ * payload (so the dashboard reuses its brand marks), and `label` is what
+ * the subscription calls itself — "Codex" is a plan, not a vendor.
+ */
+export const QUOTA_PROVIDERS = new Map<string, { provider: string; label: string }>([
+  ["codex", { provider: "openai", label: "Codex" }],
+  ["claude", { provider: "anthropic", label: "Claude" }],
+]);
 
 /** One rate-limit window of a plan — Codex Team has just the weekly one,
- *  Plus/Pro also report a 5-hour window, so this is a list. */
+ *  Claude Pro reports a 5-hour window beside it, so this is a list. */
 export interface QuotaWindow {
   label: string;
   usedPercent: number;
@@ -83,18 +100,18 @@ export interface QuotaWindow {
 export interface QuotaPlan {
   /** Canonical vendor id, so the dashboard can reuse its provider marks. */
   provider: string;
-  /** The subscription's own name — "Codex" is not a vendor, it is a plan. */
   label: string;
   plan: string | null;
+  /** Server clock at the moment this plan was reported. Per plan, not
+   *  per payload: two collectors on their own timers are two different
+   *  answers to "how old is this", and one of them can be hours stale
+   *  while the other is a minute old. */
+  capturedAt: string;
   windows: QuotaWindow[];
   /** Expiry of each unspent manual-reset credit, ascending. The count is
-   *  the list's length; storing both would be one number too many. */
+   *  the list's length; storing both would be one number too many.
+   *  Empty for plans with no such thing (Claude has none). */
   resetCredits: string[];
-}
-
-export interface QuotaSnapshot {
-  capturedAt: string;
-  plans: QuotaPlan[];
 }
 
 const RANGES = [
@@ -300,23 +317,38 @@ class RangeAgg {
 
 /** Compose the full /api/site JSON from D1 (one batch, three statements). */
 /**
- * The quota snapshot to compose into the payload. Callers that just
- * wrote one pass it in: KV is eventually consistent, so a write followed
- * by its own read can still answer with the previous value, and the one
- * moment the number matters most is the moment it changed.
+ * Every stored plan, in a stable order so an unchanged payload hashes to
+ * an unchanged ETag. A caller that just wrote one passes it in: KV is
+ * eventually consistent, so a write followed by its own read can still
+ * answer with the previous value, and the moment the number matters most
+ * is the moment it changed.
  */
-export async function composeSiteBody(
-  env: Env,
-  quota?: QuotaSnapshot | null
-): Promise<string> {
+async function readQuota(env: Env, fresh?: QuotaPlan): Promise<QuotaPlan[]> {
+  const ids = [...QUOTA_PROVIDERS.values()].map(({ provider }) => provider);
+  const stored = await Promise.all(
+    ids.map((provider) =>
+      env.SITE_CACHE.get<QuotaPlan>(quotaKey(provider), {
+        type: "json",
+        cacheTtl: KV_CACHE_TTL,
+      })
+    )
+  );
+  const plans = stored.filter((plan): plan is QuotaPlan => plan !== null);
+  if (fresh) {
+    const at = plans.findIndex(({ provider }) => provider === fresh.provider);
+    if (at === -1) plans.push(fresh);
+    else plans[at] = fresh;
+  }
+  return plans.sort((a, b) => ids.indexOf(a.provider) - ids.indexOf(b.provider));
+}
+
+/**
+ * `quota` is the freshly reported plan, when the caller is the endpoint
+ * that just stored one — see readQuota.
+ */
+export async function composeSiteBody(env: Env, quota?: QuotaPlan): Promise<string> {
   const today = isoToday();
-  const quotaSnapshot =
-    quota !== undefined
-      ? quota
-      : await env.SITE_CACHE.get<QuotaSnapshot>(QUOTA_KEY, {
-          type: "json",
-          cacheTtl: KV_CACHE_TTL,
-        });
+  const quotaPlans = await readQuota(env, quota);
 
   // `u.date <= ?1` on all three statements is the one place the payload
   // is bounded as of today, so ranges, the daily series and the device
@@ -438,7 +470,7 @@ export async function composeSiteBody(
       schemaVersion: SITE_VERSION,
       generatedAt: new Date().toISOString(),
       today,
-      quota: quotaSnapshot,
+      quota: quotaPlans,
       ranges,
       daily: [...daily.values()].sort((a, b) => (a.date < b.date ? -1 : 1)),
       devices,
@@ -484,22 +516,28 @@ function putSiteCache(env: Env, body: string, etag: string): Promise<void> {
 }
 
 /**
+ * Drop every stored plan. Quota is reported data like any other, and it
+ * names the account's subscription, so the full wipe takes it along.
+ */
+export async function wipeQuota(env: Env): Promise<void> {
+  await Promise.all(
+    [...QUOTA_PROVIDERS.values()].map(({ provider }) =>
+      env.SITE_CACHE.delete(quotaKey(provider))
+    )
+  );
+}
+
+/**
  * Recompute the site payload and store it in KV.
  *
- * Passing a quota snapshot persists it in the same call and composes the
+ * Passing a quota plan persists it in the same call and composes the
  * payload from that same in-memory value, so the collector's write and
- * the view it appears in cannot disagree. Without it the stored snapshot
- * is read back and carried through unchanged — a submission must never
+ * the view it appears in cannot disagree. Without it the stored plans
+ * are read back and carried through unchanged — a submission must never
  * drop a quota card just because it had nothing to say about quota.
  */
-export async function refreshSiteCache(
-  env: Env,
-  quota?: QuotaSnapshot | null
-): Promise<void> {
-  if (quota) await env.SITE_CACHE.put(QUOTA_KEY, JSON.stringify(quota));
-  // Explicit null is the full wipe: the snapshot is reported data like
-  // any other, and it names the account's plan.
-  else if (quota === null) await env.SITE_CACHE.delete(QUOTA_KEY);
+export async function refreshSiteCache(env: Env, quota?: QuotaPlan): Promise<void> {
+  if (quota) await env.SITE_CACHE.put(quotaKey(quota.provider), JSON.stringify(quota));
   const body = await composeSiteBody(env, quota);
   await putSiteCache(env, body, await etagOf(body));
 }

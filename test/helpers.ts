@@ -9,6 +9,7 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import worker from "../src/index";
 import type { SubmissionPayload } from "../src/payload";
+import { QUOTA_PROVIDERS } from "../src/site";
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
@@ -27,7 +28,11 @@ export async function reset(): Promise<void> {
     await env.ARCHIVE.delete(objects.objects.map((object) => object.key));
   }
   await env.SITE_CACHE.delete("site");
-  await env.SITE_CACHE.delete("quota");
+  await Promise.all(
+    [...QUOTA_PROVIDERS.values()].map(({ provider }) =>
+      env.SITE_CACHE.delete(`quota:${provider}`)
+    )
+  );
 }
 
 export async function call(
@@ -167,10 +172,48 @@ export function quotaPayload(): Record<string, unknown> {
   };
 }
 
-export function reportQuota(payload: unknown = quotaPayload()): Promise<Response> {
-  return call("/api/quota", {
+/**
+ * api.anthropic.com/api/oauth/usage verbatim, plus the `plan` the
+ * collector reads beside the credential. The fields with no card to
+ * appear on (`spend`, `extra_usage`, the parallel `limits` array) are
+ * kept so the narrowing has something to drop.
+ */
+export function claudeQuotaPayload(): Record<string, unknown> {
+  return {
+    plan: "pro",
+    five_hour: {
+      utilization: 60,
+      resets_at: "2026-08-06T11:49:59.452780+00:00",
+      limit_dollars: null,
+      used_dollars: null,
+    },
+    seven_day: {
+      utilization: 6,
+      resets_at: "2026-08-13T03:59:59.452807+00:00",
+      limit_dollars: null,
+      used_dollars: null,
+    },
+    seven_day_opus: null,
+    limits: [
+      { kind: "session", group: "session", percent: 60, severity: "normal", is_active: true },
+      { kind: "weekly_all", group: "weekly", percent: 6, severity: "normal", is_active: false },
+    ],
+    spend: { used: { amount_minor: 0, currency: "USD" }, percent: 0, enabled: false },
+    extra_usage: { is_enabled: false, monthly_limit: null },
+    member_dashboard_available: false,
+  };
+}
+
+export function reportQuota(
+  payload: unknown = quotaPayload(),
+  provider = "codex"
+): Promise<Response> {
+  return call(`/api/quota/${provider}`, {
     method: "POST",
     headers: { ...AUTH, "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
 }
+
+export const reportClaudeQuota = (payload: unknown = claudeQuotaPayload()) =>
+  reportQuota(payload, "claude");

@@ -50,21 +50,32 @@ push: the Workers Builds log prints the executed build command, so a
   it — only exists for shapes the current reader survives whole, and it
   costs a second round through both repos; `daily[].models` took it
   under 7, and the version caught up to 8 when the homepage read it.
-- The subscription quota card is **reported, not derived**: one host
-  (OracleARM, via `scripts/report-quota.sh` on a systemd user timer)
-  runs `tokens codex status --json` and POSTs it to `/api/quota`, so the
-  OAuth credential never leaves that box and the Worker runs no cron for
-  it. Three rules hold it together: the third-party CLI's output is
-  narrowed by hand in `src/quota.ts` (an upstream rename must become a
-  400, never a silent contract change — and that is where the account
-  email is dropped, since `/api/site` is public); the snapshot lives in
-  one overwritten KV key rather than D1, because a percentage a
-  collector can re-fetch is not history; and `capturedAt` comes from the
-  server clock and always ships, because a sleeping collector is the
-  failure mode and the card has to be able to say how old it is.
-  `refreshSiteCache(env, snapshot)` persists and recomposes in one call —
-  KV is eventually consistent, so never write the snapshot and then read
-  it back to compose the payload. Passing `null` is the full-wipe path.
+- The subscription quota cards are **reported, not derived**: one host
+  (OracleARM, two systemd user timers) reports Codex via
+  `scripts/report-codex-quota.sh` (`tokens codex status --json`) and
+  Claude via `scripts/report-claude-quota.py` (Anthropic's
+  `/api/oauth/usage`), so no OAuth credential ever leaves that box and
+  the Worker runs no cron. Four rules hold it together: each vendor's
+  body is narrowed by hand in `src/quota.ts` (an upstream rename must
+  become a 400, never a silent contract change — and that is where
+  account identity is dropped, since `/api/site` is public); **one KV
+  key per provider** (`quota:<provider>`), never one shared snapshot,
+  because the legs use different credentials and must fail
+  independently; no D1, because a percentage a collector can re-fetch is
+  not history; and `capturedAt` is **per plan**, from the server clock,
+  always shipped — two collectors on their own timers are two different
+  answers to "how old is this". `refreshSiteCache(env, plan)` persists
+  and recomposes in one call: KV is eventually consistent, so never
+  write a plan and then read it back to compose the payload. `wipeQuota`
+  is the full-wipe path.
+- `report-claude-quota.py` is the one place this repo can destroy a
+  credential: **Anthropic rotates the refresh token on every exchange**.
+  It therefore refreshes only within 10 minutes of expiry, writes the
+  new pair back *atomically before using it* (temp file in the same dir
+  → fsync → `os.replace`, 0600), and preserves every other field in
+  `~/.claude/.credentials.json`, which belongs to Claude Code. Do not
+  "simplify" any of that. The access token lasts ~12h and that host does
+  not run `claude` daily, which is why the script must refresh at all.
 - Every leg of the submission fan-out is bounded on purpose, because
   devices rescan every 30 minutes whether or not anything changed — over
   80% of submissions write no usage rows. So: the raw R2 archive uses one
