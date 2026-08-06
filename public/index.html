@@ -652,10 +652,10 @@
   <section id="architecture">
     <h2>Architecture</h2>
     <p>
-      One Worker, three bindings. Submissions are the only write event, so they drive everything
-      downstream — there is no cron. Reads never queue behind writes, and never touch D1 at all
-      in the steady state: the dashboard payload is precomposed into KV and served with an ETag
-      so browsers revalidate instead of guessing.
+      One Worker, three bindings. Writes are events — submissions, plus one reported quota
+      snapshot — so they drive everything downstream and there is no cron. Reads never queue
+      behind writes, and never touch D1 at all in the steady state: the dashboard payload is
+      precomposed into KV and served with an ETag so browsers revalidate instead of guessing.
     </p>
 
     <div class="lane">
@@ -670,6 +670,23 @@
         Each machine runs <code>tokens serve</code> and POSTs a full rescan of its local session
         logs. The payload is validated with the official server’s consistency checks, then merged
         day by day (semantics below).
+      </p>
+    </div>
+
+    <div class="lane">
+      <h3 class="label">Quota · every 30 minutes, one host</h3>
+      <p class="flow">
+        <span class="node">ChatGPT usage API</span><span class="arr" aria-hidden="true">→</span>
+        <span class="node">OracleARM</span><span class="arr" aria-hidden="true">→</span>
+        <span class="node">POST /api/quota</span><span class="arr" aria-hidden="true">→</span>
+        <span class="node" data-store>KV · quota snapshot</span>
+      </p>
+      <p class="cap">
+        How much of the Codex plan’s weekly window is spent — a number no session log contains.
+        The OAuth credential it needs stays on the collecting host, which reports finished
+        percentages; this Worker holds no vendor secret and runs no scheduled job. The output of a
+        third-party CLI is narrowed by hand into the payload’s own shape, which is where the
+        account’s email address is dropped. Quota is account-wide, so exactly one host reports it.
       </p>
     </div>
 
@@ -733,7 +750,7 @@
         <tr>
           <td><code>SITE_CACHE</code></td>
           <td>Workers KV</td>
-          <td>Precomposed <code>/api/site</code> payload, rewritten on every accepted submission.</td>
+          <td>Precomposed <code>/api/site</code> payload, rewritten on every accepted submission, plus the reported quota snapshot it carries.</td>
         </tr>
         <tr>
           <td><code>ARCHIVE</code></td>
@@ -877,6 +894,17 @@ npx wrangler d1 execute tokens-usage --remote \
         </div>
       </li>
       <li class="ep">
+        <span class="method" data-m="POST">POST</span>
+        <button class="path" type="button" data-copy="/api/quota" aria-label="Copy https://tokens.lkwplus.com/api/quota">/api/quota
+          <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
+          <svg class="ic-check" aria-hidden="true"><use href="#i-check"/></svg>
+        </button>
+        <span class="ep-aside">auth</span>
+        <div class="ep-body">
+          <p>Subscription rate-limit snapshot, the verbatim output of <code>tokens codex status --json</code> reported by <code>scripts/report-quota.sh</code>. Narrowed into the payload’s own shape — windows, reset times and unspent reset credits — and stored as a full overwrite, so a plan change leaves no stale window. Responds with <code>{success, capturedAt, provider}</code>.</p>
+        </div>
+      </li>
+      <li class="ep">
         <span class="method" data-m="DELETE">DEL</span>
         <button class="path" type="button" data-copy="/api/settings/submitted-data" aria-label="Copy https://tokens.lkwplus.com/api/settings/submitted-data">/api/settings/submitted-data
           <svg class="ic-copy" aria-hidden="true"><use href="#i-copy"/></svg>
@@ -884,7 +912,7 @@ npx wrangler d1 execute tokens-usage --remote \
         </button>
         <span class="ep-aside">auth</span>
         <div class="ep-body">
-          <p>Wipes all stored data across all three stores (<code>tokens delete-submitted-data</code>): the D1 tables, every R2 archive and backup, and the KV site payload — recomposed before the response, so success means the public dashboard is already clean.</p>
+          <p>Wipes all stored data across all three stores (<code>tokens delete-submitted-data</code>): the D1 tables, every R2 archive and backup, the reported quota snapshot, and the KV site payload — recomposed before the response, so success means the public dashboard is already clean.</p>
         </div>
       </li>
       <li class="ep">

@@ -1,0 +1,11 @@
+[Unit]
+Description=report the Codex subscription quota to tokens.lkwplus.com
+Documentation=https://github.com/synthpop123/tokens-worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/report-quota.sh
+Environment=TOKENS_API_URL=https://tokens.lkwplus.com
+Environment=TZ=Asia/Shanghai

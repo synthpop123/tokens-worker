@@ -27,6 +27,13 @@
  * cron needed, submissions are the only write event and devices report
  * every 30 minutes.
  *
+ * The one write that is not a submission is POST /api/quota: the tokens
+ * page also shows how much of the Codex subscription's weekly window is
+ * spent, a number no session log contains. A collector reads it from the
+ * vendor on the machine that holds the credential and reports it here,
+ * so this Worker stores no vendor secret and runs no scheduled job for
+ * it. It refreshes the same KV payload by the same event-driven rule.
+ *
  * `/` serves the static homepage (public/index.html) through Workers Static
  * Assets, which matches before this router runs. Not implemented: the
  * browser GitHub OAuth device flow (POST /api/auth/device[/poll]); use
@@ -36,6 +43,7 @@
 import type { Env } from "./http";
 import { json, CORS_HEADERS } from "./http";
 import { handleSubmit, handleAuthToken, handleDeleteSubmittedData } from "./submit";
+import { handleQuota } from "./quota";
 import { handleSite } from "./site";
 
 export type { Env };
@@ -57,6 +65,8 @@ const ROUTES = new Map<string, Handler>([
   ["POST /api/submit", handleSubmit],
   ["DELETE /api/settings/submitted-data", handleDeleteSubmittedData],
   ["GET /api/auth/token", handleAuthToken],
+  // Reported by the quota collector, not by the CLI itself (see quota.ts).
+  ["POST /api/quota", handleQuota],
   // Public reads: the precomposed dashboard view, and a liveness check.
   ["GET /api/site", handleSite],
   ["GET /api/health", () => json({ service: "tokens-usage", ok: true }, 200, CORS_HEADERS)],

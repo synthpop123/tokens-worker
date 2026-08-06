@@ -1,0 +1,15 @@
+[Unit]
+Description=report the Codex subscription quota every 30 minutes
+
+[Timer]
+# Matches the reporting cadence of `tokens serve` on the same host. The
+# vendor's number does not move faster than the usage that moves it, and
+# this is a real API call against ChatGPT — 48 a day is plenty.
+OnBootSec=2min
+OnUnitActiveSec=30min
+# Spread the wakeup so the quota fetch and a submission do not contend.
+RandomizedDelaySec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

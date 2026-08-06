@@ -421,10 +421,11 @@ export async function handleAuthToken(request: Request, env: Env): Promise<Respo
  * DELETE /api/settings/submitted-data — wipe everything for this account,
  * across all three stores: the four D1 tables, every R2 object (raw
  * payload archives and daily exports reproduce submitted data, so they
- * go too), and the precomposed KV site payload, which is recomposed
- * synchronously so the public dashboard never serves deleted data after
- * the CLI has been told the deletion succeeded. Runs unconditionally,
- * so a retry completes whatever a failed earlier attempt left behind.
+ * go too), the reported quota snapshot, and the precomposed KV site
+ * payload, which is recomposed synchronously so the public dashboard
+ * never serves deleted data after the CLI has been told the deletion
+ * succeeded. Runs unconditionally, so a retry completes whatever a
+ * failed earlier attempt left behind.
  */
 export async function handleDeleteSubmittedData(request: Request, env: Env): Promise<Response> {
   if (!(await isAuthorized(request, env))) {
@@ -441,6 +442,6 @@ export async function handleDeleteSubmittedData(request: Request, env: Env): Pro
     env.DB.prepare(`DELETE FROM submissions`),
   ]);
   await wipeArchive(env);
-  await refreshSiteCache(env);
+  await refreshSiteCache(env, null);
   return json({ deleted: n > 0, deletedSubmissions: n });
 }

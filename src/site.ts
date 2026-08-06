@@ -23,6 +23,13 @@
  * Composition is one D1 batch of three statements bounded as of today
  * (composeSiteBody), aggregated into all five ranges in JS; the result
  * is served from KV, rewritten by every accepted submission (handleSite).
+ *
+ * One field does not come from D1 at all: `quota`, the subscription
+ * plan's rate-limit snapshot, is *reported* by a collector (quota.ts)
+ * and carried through from its own KV key. Everything else in the body
+ * is derived from the usage matrix and can be recomputed from it; this
+ * one cannot, which is why it is stored rather than aggregated — and
+ * why it ships with the `capturedAt` that dates it.
  */
 
 import type { Env } from "./http";
@@ -45,11 +52,50 @@ import { canonicalModel, canonicalProvider } from "./models";
 // homepage's SITE_SCHEMA_VERSION and its committed /api/site fixture
 // (homepage: src/lib/client/tokens.ts + .test.ts).
 const SITE_KEY = "site";
-export const SITE_VERSION = 10;
+export const SITE_VERSION = 11;
 /** How long a PoP may serve its local copy of the KV entry before
  *  re-checking central storage — the global worst-case staleness after
  *  a submission rewrites the payload (30 is the API's minimum). */
 const KV_CACHE_TTL = 30;
+
+/**
+ * The subscription-quota snapshot, in its own KV key beside the payload
+ * it rides into. It is *reported*, not derived: no D1 table backs it,
+ * because a percentage that a collector can re-fetch in a second is not
+ * history worth storing — one key, overwritten in place, constant in
+ * size forever. That is the same bound every other leg of the fan-out
+ * carries, reached by never accumulating in the first place.
+ *
+ * Which also means the payload can lie by omission if the collector
+ * stops: `capturedAt` is the reader's only defence, so it is composed
+ * from the server clock at write time and always ships.
+ */
+const QUOTA_KEY = "quota";
+
+/** One rate-limit window of a plan — Codex Team has just the weekly one,
+ *  Plus/Pro also report a 5-hour window, so this is a list. */
+export interface QuotaWindow {
+  label: string;
+  usedPercent: number;
+  resetsAt: string | null;
+}
+
+export interface QuotaPlan {
+  /** Canonical vendor id, so the dashboard can reuse its provider marks. */
+  provider: string;
+  /** The subscription's own name — "Codex" is not a vendor, it is a plan. */
+  label: string;
+  plan: string | null;
+  windows: QuotaWindow[];
+  /** Expiry of each unspent manual-reset credit, ascending. The count is
+   *  the list's length; storing both would be one number too many. */
+  resetCredits: string[];
+}
+
+export interface QuotaSnapshot {
+  capturedAt: string;
+  plans: QuotaPlan[];
+}
 
 const RANGES = [
   { key: "day", days: 1 },
@@ -253,8 +299,24 @@ class RangeAgg {
 }
 
 /** Compose the full /api/site JSON from D1 (one batch, three statements). */
-export async function composeSiteBody(env: Env): Promise<string> {
+/**
+ * The quota snapshot to compose into the payload. Callers that just
+ * wrote one pass it in: KV is eventually consistent, so a write followed
+ * by its own read can still answer with the previous value, and the one
+ * moment the number matters most is the moment it changed.
+ */
+export async function composeSiteBody(
+  env: Env,
+  quota?: QuotaSnapshot | null
+): Promise<string> {
   const today = isoToday();
+  const quotaSnapshot =
+    quota !== undefined
+      ? quota
+      : await env.SITE_CACHE.get<QuotaSnapshot>(QUOTA_KEY, {
+          type: "json",
+          cacheTtl: KV_CACHE_TTL,
+        });
 
   // `u.date <= ?1` on all three statements is the one place the payload
   // is bounded as of today, so ranges, the daily series and the device
@@ -376,6 +438,7 @@ export async function composeSiteBody(env: Env): Promise<string> {
       schemaVersion: SITE_VERSION,
       generatedAt: new Date().toISOString(),
       today,
+      quota: quotaSnapshot,
       ranges,
       daily: [...daily.values()].sort((a, b) => (a.date < b.date ? -1 : 1)),
       devices,
@@ -420,9 +483,24 @@ function putSiteCache(env: Env, body: string, etag: string): Promise<void> {
   });
 }
 
-/** Recompute the site payload and store it in KV. */
-export async function refreshSiteCache(env: Env): Promise<void> {
-  const body = await composeSiteBody(env);
+/**
+ * Recompute the site payload and store it in KV.
+ *
+ * Passing a quota snapshot persists it in the same call and composes the
+ * payload from that same in-memory value, so the collector's write and
+ * the view it appears in cannot disagree. Without it the stored snapshot
+ * is read back and carried through unchanged — a submission must never
+ * drop a quota card just because it had nothing to say about quota.
+ */
+export async function refreshSiteCache(
+  env: Env,
+  quota?: QuotaSnapshot | null
+): Promise<void> {
+  if (quota) await env.SITE_CACHE.put(QUOTA_KEY, JSON.stringify(quota));
+  // Explicit null is the full wipe: the snapshot is reported data like
+  // any other, and it names the account's plan.
+  else if (quota === null) await env.SITE_CACHE.delete(QUOTA_KEY);
+  const body = await composeSiteBody(env, quota);
   await putSiteCache(env, body, await etagOf(body));
 }
 

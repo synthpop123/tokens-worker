@@ -9,7 +9,7 @@ Self-hosted backend for the [`tokens`](https://github.com/missuo/tokens) CLI, ru
 
 Each machine runs `tokens serve` with `TOKENS_API_URL=https://tokens.lkwplus.com`; the CLI POSTs a full rescan of its local session logs every 30 minutes. This Worker implements the official server's submission contract and merge semantics, stores the full usage matrix in D1, and serves one precomposed read endpoint for the personal site.
 
-Every accepted submission also (a) rewrites the precomposed `/api/site` payload in KV, (b) archives the raw payload to R2 (`raw/<deviceId>/latest.json` — submissions are full rescans, so the latest one reproduces the device's whole history), and (c) once per Asia/Shanghai day exports the usage tables to R2 (`backup/YYYY-MM-DD.json`), a long-term backup beyond D1's 30-day Time Travel. Submissions are the only write event, so no cron is needed.
+Every accepted submission also (a) rewrites the precomposed `/api/site` payload in KV, (b) archives the raw payload to R2 (`raw/<deviceId>/latest.json` — submissions are full rescans, so the latest one reproduces the device's whole history), and (c) once per Asia/Shanghai day exports the usage tables to R2 (`backup/YYYY-MM-DD.json`), a long-term backup beyond D1's 30-day Time Travel. One other write reaches the same payload — the subscription quota snapshot, reported by a collector on one host (see [Quota collection](#quota-collection)). Both are events, so no cron is needed.
 
 Everything on that fan-out is bounded in size, deliberately: the raw archive uses one fixed key per device, the daily exports are pruned past 180 days, and the submission audit log is a rolling 30-day window trimmed by the same batch that appends to it. Devices rescan every 30 minutes whether or not anything changed — over 80% of submissions write no usage rows at all — so anything that accumulated per submission would grow forever on cadence alone, and anything copied into a fresh daily object would grow with the *square* of time.
 
@@ -49,6 +49,7 @@ Every CLI endpoint requires `Authorization: Bearer $TOKENS_API_TOKEN`; the read 
 | Endpoint | Used by | Description |
 |---|---|---|
 | `POST /api/submit` | `tokens submit` / `serve` / `autosubmit` | Full submission payload; responds `{success, submissionId, username, metrics, mode, warnings?}` |
+| `POST /api/quota` | `scripts/report-quota.sh` | Subscription rate-limit snapshot — see [Quota collection](#quota-collection); responds `{success, capturedAt, provider}` |
 | `DELETE /api/settings/submitted-data` | `tokens delete-submitted-data` | Wipes all stored data across all three stores — D1 tables, every R2 object (raw archives and daily backups reproduce submitted data, so they go too), and the KV site payload, recomposed synchronously so the dashboard is clean before the CLI hears "success"; responds `{deleted, deletedSubmissions}` |
 | `GET /api/auth/token` | `tokens login --token tt_...` | Token validation; responds `{user: {username}}` |
 
@@ -68,7 +69,7 @@ Every breakdown row carries the full metric set: `input`, `output`, `cacheRead`,
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/site` | Precomposed dashboard view, one request for the whole page: per-range (`day`/`week`/`month`/`quarter`/`all`, where `day` is today in Asia/Shanghai — it backs the dashboard's Today section and is the only place the full metric set is split per model for a single day) totals + breakdowns (every row carries its usage span — `days`, `firstDate`, `lastDate`; model rows name the `providers` that served them, and **client and provider rows carry `models`** — the client × model and provider × model cells, the slices the marginals cannot reconstruct), the full daily series sliced **by provider, by client and by model** (canonical ids, `{tokens, cost}` each) with per-day `active` time, and the device inventory incl. CLI version, sessions, active-time metrics and MCP servers. Costs are rounded to microdollars. The whole payload is a view **as of today**: submissions may carry dates up to two days ahead (clock skew, timezones east of Asia/Shanghai), and those rows stay in D1 until their own day arrives rather than landing in a window that ends today. No filters; served from KV. The body carries `schemaVersion` — see [Cross-repo contract](#cross-repo-contract) |
+| `GET /api/site` | Precomposed dashboard view, one request for the whole page: the reported `quota` snapshot (`null` until a collector has spoken), per-range (`day`/`week`/`month`/`quarter`/`all`, where `day` is today in Asia/Shanghai — it backs the dashboard's Today section and is the only place the full metric set is split per model for a single day) totals + breakdowns (every row carries its usage span — `days`, `firstDate`, `lastDate`; model rows name the `providers` that served them, and **client and provider rows carry `models`** — the client × model and provider × model cells, the slices the marginals cannot reconstruct), the full daily series sliced **by provider, by client and by model** (canonical ids, `{tokens, cost}` each) with per-day `active` time, and the device inventory incl. CLI version, sessions, active-time metrics and MCP servers. Costs are rounded to microdollars. The whole payload is a view **as of today**: submissions may carry dates up to two days ahead (clock skew, timezones east of Asia/Shanghai), and those rows stay in D1 until their own day arrives rather than landing in a window that ends today. No filters; served from KV. The body carries `schemaVersion` — see [Cross-repo contract](#cross-repo-contract) |
 | `GET /api/health` | Liveness check (`/` serves the static homepage) |
 
 ### Cross-repo contract
@@ -77,11 +78,63 @@ Every breakdown row carries the full metric set: `input`, `output`, `cacheRead`,
 
 The two repos deploy independently, so a bump has no atomic moment — whichever ships first talks to the other side's previous version for a minute or two, and visitors without a session cache see the fallback for that window. **Ship this Worker first**: the fixture has to be captured from a live endpoint already serving the new schema, so the producer leads and the page falls back until the homepage deploy lands (schemas 9 and 10 both went out this way). The window can be closed by temporarily letting the consumer's `isSite` accept the previous version alongside the new one and shipping the homepage first, but that only works for shapes the older reader survives, and it costs an extra round trip through both repos; at rest the consumer accepts exactly one version, which is what keeps the two sides honest.
 
+## Quota collection
+
+The dashboard also answers a question no session log can: how much of the
+Codex subscription's weekly window is already spent. That number lives at
+the vendor, and reaching it needs an OAuth credential — so the credential
+is the thing that decides the architecture.
+
+It never leaves the machine that holds it. **OracleARM** — the host that
+already runs `tokens serve` — runs `scripts/report-quota.sh` on a 30-minute
+systemd user timer; the script shells out to `tokens codex status --json`
+(which reads the local `~/.codex/auth.json`, refreshes the OAuth token when
+it has expired, and calls ChatGPT's usage API) and POSTs the result to
+`/api/quota`. The Worker stores no vendor secret, runs no scheduled job,
+and sees percentages and timestamps and nothing else.
+
+That output belongs to a third-party CLI, so **nothing is passed through**.
+`src/quota.ts` narrows it by hand into the shape `/api/site` publishes —
+which is where the account's email address is dropped, since that endpoint
+is public and unauthenticated, and where an upstream field rename becomes a
+400 instead of a silent homepage change. The snapshot is a full overwrite,
+so a plan change cannot leave a stale window behind.
+
+It is stored in **KV, not D1**: one key, rewritten in place, constant in
+size forever. A percentage a collector can re-fetch in a second is not
+history, and the fan-out's rule is that nothing accumulates on cadence. For
+the same reason it is not copied into the daily R2 export — but it *is*
+deleted by `DELETE /api/settings/submitted-data`, because it names the
+account's plan.
+
+Quota is account-wide, so exactly one host reports it; a second would add a
+race and no information. Which also means the payload can go stale silently
+if that host sleeps — `capturedAt` (the *server's* clock, never the
+collector's) is the reader's only defence, so it always ships, and the
+dashboard ages the card by it rather than presenting an undated number as
+current. Reset times are absolute, so a window that has since rolled over
+reads as reset rather than as a stale percentage.
+
+Installing it on a fresh host, as the `agent` user:
+
+```sh
+install -Dm755 scripts/report-quota.sh ~/.local/bin/report-quota.sh
+install -Dm644 scripts/tokens-quota.{service,timer} -t ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now tokens-quota.timer
+systemctl --user start tokens-quota.service   # report once, now
+```
+
+The bearer token is read from the CLI's own `~/.config/tokens/credentials.json`
+rather than copied into the unit file, so there is one thing to rotate. The
+timer needs `loginctl enable-linger` for the user, which `tokens serve`
+already required.
+
 ## Security & privacy
 
 - **The only secret is `TOKENS_API_TOKEN`** (the write-path bearer token). It lives as a Worker secret in Cloudflare and in the gitignored `.dev.vars` locally — never committed. The auth check hashes both sides and compares with the runtime's timing-safe primitive.
 - **`wrangler.jsonc` carries resource identifiers, not credentials** — the D1 `database_id` and KV namespace `id` only name the bindings; access requires a Cloudflare API token that is not in the repo.
-- **Reads are public by design** — aggregate usage numbers for a personal dashboard. Internal device ids never leave the Worker at all: public rows identify devices by display name (an integration test pins this), raw payloads / backups stay in the private R2 bucket, and the one endpoint that ever returned ids (`GET /api/me/stats`, whose consumer the CLI dropped in v27) has been removed.
+- **Reads are public by design** — aggregate usage numbers for a personal dashboard. Internal device ids never leave the Worker at all: public rows identify devices by display name (an integration test pins this), raw payloads / backups stay in the private R2 bucket, and the one endpoint that ever returned ids (`GET /api/me/stats`, whose consumer the CLI dropped in v27) has been removed. The quota snapshot is narrowed the same way: the vendor reports the account's email address with it, and it is dropped at the door — `test/quota.spec.ts` asserts the string never appears in the public body.
+- **No vendor credential lives here.** The quota number needs OAuth against ChatGPT; that happens on the collecting host, which reports the finished percentages. There is nothing to steal from the Worker that would grant access to the subscription.
 - **CORS is a static wildcard, never Origin-derived.** Reads are cacheable, and an Origin-dependent header on a cacheable response poisons caches (`src/http.ts` documents the incident).
 
 ## Setup & deploy

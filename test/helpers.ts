@@ -27,6 +27,7 @@ export async function reset(): Promise<void> {
     await env.ARCHIVE.delete(objects.objects.map((object) => object.key));
   }
   await env.SITE_CACHE.delete("site");
+  await env.SITE_CACHE.delete("quota");
 }
 
 export async function call(
@@ -112,6 +113,62 @@ export function submissionPayload(): SubmissionPayload {
 
 export function submit(payload: SubmissionPayload = submissionPayload()): Promise<Response> {
   return call("/api/submit", {
+    method: "POST",
+    headers: { ...AUTH, "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+/**
+ * `tokens codex status --json` verbatim, down to the fields the Worker
+ * is expected to drop — the email above all, which must never reach the
+ * public payload. Kept whole precisely because the narrowing is the
+ * contract under test.
+ */
+export function quotaPayload(): Record<string, unknown> {
+  return {
+    usage: {
+      provider: "Codex",
+      plan: "Team",
+      email: "someone@example.com",
+      metrics: [
+        {
+          label: "Weekly",
+          used_percent: 28,
+          remaining_percent: 72,
+          remaining_label: null,
+          resets_at: "2026-08-08T13:28:31+00:00",
+        },
+      ],
+      reset_credits: {
+        available_count: 2,
+        credits: [
+          {
+            id: "RateLimitResetCredit_b",
+            status: "available",
+            reset_type: "codex_rate_limits",
+            expires_at: "2026-08-12T17:51:33.326563Z",
+            title: "Full reset",
+            description: "Thanks for using Codex!",
+          },
+          {
+            id: "RateLimitResetCredit_a",
+            status: "available",
+            reset_type: "codex_rate_limits",
+            expires_at: "2026-08-11T21:08:53.949704Z",
+            title: "Full reset",
+            description: "Thanks for using Codex!",
+          },
+        ],
+      },
+      credit_status: { has_credits: false, unlimited: false, overage_limit_reached: false },
+      spend_control: { reached: false },
+    },
+  };
+}
+
+export function reportQuota(payload: unknown = quotaPayload()): Promise<Response> {
+  return call("/api/quota", {
     method: "POST",
     headers: { ...AUTH, "Content-Type": "application/json" },
     body: JSON.stringify(payload),
