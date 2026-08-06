@@ -58,6 +58,19 @@ function toWindow(label: string, used: unknown, resetsAt: unknown): QuotaWindow 
   };
 }
 
+/**
+ * A subscription tier as the payload publishes it. The vendors disagree
+ * about case — the Codex CLI capitalizes ("Team"), Anthropic stores the
+ * raw enum ("pro") — and two cards side by side should not advertise
+ * that. Only the first letter is touched: "Pro", "Max", "Team", and
+ * anything a vendor deliberately cased stays as it came.
+ */
+function tierOf(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const tier = value.trim();
+  return tier === "" ? null : tier[0].toUpperCase() + tier.slice(1);
+}
+
 /** What a narrowing function returns before the plan's identity and
  *  capture time are attached. */
 type Narrowed = { plan: string | null; windows: QuotaWindow[]; resetCredits: string[] };
@@ -98,8 +111,7 @@ const narrowCodex: Narrow = (body) => {
   }
   resetCredits.sort();
 
-  const plan = typeof usage.plan === "string" && usage.plan.trim() !== "" ? usage.plan.trim() : null;
-  return { plan, windows, resetCredits };
+  return { plan: tierOf(usage.plan), windows, resetCredits };
 };
 
 /**
@@ -121,8 +133,7 @@ const narrowClaude: Narrow = (body) => {
     const window = toWindow(label, limit.utilization, limit.resets_at);
     if (window) windows.push(window);
   }
-  const plan = typeof body.plan === "string" && body.plan.trim() !== "" ? body.plan.trim() : null;
-  return { plan, windows, resetCredits: [] };
+  return { plan: tierOf(body.plan), windows, resetCredits: [] };
 };
 
 const NARROW = new Map<string, Narrow>([

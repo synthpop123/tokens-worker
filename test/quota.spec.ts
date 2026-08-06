@@ -124,7 +124,10 @@ describe("POST /api/quota/claude", () => {
     expect(plan).toMatchObject({
       provider: "anthropic",
       label: "Claude",
-      plan: "pro",
+      // Anthropic stores the raw enum ("pro"); the payload publishes
+      // one casing so two cards side by side do not advertise the
+      // vendors' disagreement.
+      plan: "Pro",
       windows: [
         { label: "5h", usedPercent: 60, resetsAt: "2026-08-06T11:49:59.452Z" },
         { label: "Weekly", usedPercent: 6, resetsAt: "2026-08-13T03:59:59.452Z" },

@@ -47,6 +47,13 @@ SCOPE = (
 # the token it was sent with has died.
 REFRESH_MARGIN_S = 600
 TIMEOUT_S = 30
+# Every outbound request identifies itself. Cloudflare fronts the
+# collector and answers the stdlib's default `Python-urllib/3.x` with a
+# 403 (error 1010, a browser-signature ban), so this is load-bearing on
+# the report leg, not decoration.
+USER_AGENT = "tokens-quota-collector (+https://github.com/synthpop123/tokens-worker)"
+# The vendor endpoints expect the client Claude Code presents.
+VENDOR_USER_AGENT = "axios/1.15.2"
 
 CREDENTIALS = Path(
     os.environ.get("CLAUDE_CREDENTIALS", Path.home() / ".claude" / ".credentials.json")
@@ -122,7 +129,7 @@ def refresh(stored: dict[str, Any], oauth: dict[str, Any]) -> str:
                 "refresh_token": refresh_token,
                 "scope": SCOPE,
             },
-            {"User-Agent": "axios/1.15.2", "Accept": "application/json"},
+            {"User-Agent": VENDOR_USER_AGENT, "Accept": "application/json"},
         )
     except urllib.error.HTTPError as error:
         detail = error.read().decode(errors="replace")[:200]
@@ -166,7 +173,7 @@ def fetch_usage(token: str) -> dict[str, Any]:
         USAGE_URL,
         headers={
             "Authorization": f"Bearer {token}",
-            "User-Agent": "axios/1.15.2",
+            "User-Agent": VENDOR_USER_AGENT,
             "Accept": "application/json",
         },
     )
@@ -193,7 +200,7 @@ def report(snapshot: dict[str, Any]) -> None:
         post_json(
             f"{API_URL}/api/quota/claude",
             snapshot,
-            {"Authorization": f"Bearer {token}"},
+            {"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT},
         )
     except urllib.error.HTTPError as error:
         detail = error.read().decode(errors="replace")[:200]
