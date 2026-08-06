@@ -125,7 +125,7 @@ const narrowCodex: Narrow = (body) => {
 const narrowClaude: Narrow = (body) => {
   const windows: QuotaWindow[] = [];
   for (const [key, label] of [
-    ["five_hour", "5h"],
+    ["five_hour", "5 hours"],
     ["seven_day", "Weekly"],
   ] as const) {
     const limit = body[key];
