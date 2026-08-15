@@ -13,6 +13,19 @@ Every accepted submission also (a) rewrites the precomposed `/api/site` payload 
 
 Everything on that fan-out is bounded in size, deliberately: the raw archive uses one fixed key per device, the daily exports are pruned past 180 days, and the submission audit log is a rolling 30-day window trimmed by the same batch that appends to it. Devices rescan every 30 minutes whether or not anything changed — over 80% of submissions write no usage rows at all — so anything that accumulated per submission would grow forever on cadence alone, and anything copied into a fresh daily object would grow with the *square* of time.
 
+## Data flow
+
+```mermaid
+flowchart LR
+  CLI["tokens CLI\n(each device)"] -->|POST /api/submit| Worker
+  Collector["quota collectors\n(OracleARM)"] -->|POST /api/quota/*| Worker
+  Worker --> D1["D1\nusage matrix"]
+  Worker --> KV["KV\nprecomposed /api/site"]
+  Worker --> R2["R2\nraw archives + daily exports"]
+  KV --> Homepage["lkwplus.com/tokens"]
+  KV --> Static["tokens.lkwplus.com"]
+```
+
 ## Homepage
 
 The root URL serves a static homepage (`public/index.html`, via [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/)) documenting the architecture and the API, with live totals and collector status pulled from `/api/site` and a light/dark toggle. Assets are matched before the Worker runs, so `/api/*` routing is untouched.
