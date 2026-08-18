@@ -129,7 +129,7 @@ describe("POST /api/quota/claude", () => {
       // vendors' disagreement.
       plan: "Pro",
       windows: [
-        { label: "5 hours", usedPercent: 60, resetsAt: "2026-08-06T11:49:59.452Z" },
+        { label: "Session", usedPercent: 60, resetsAt: "2026-08-06T11:49:59.452Z" },
         { label: "Weekly", usedPercent: 6, resetsAt: "2026-08-13T03:59:59.452Z" },
       ],
       // Claude has no manual-reset credits; the list is empty, not absent.
