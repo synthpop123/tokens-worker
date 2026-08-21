@@ -233,6 +233,7 @@ src/backup.ts            Daily usage-table export to R2 (pruned past 180
                          days) + full-wipe helper
 test/                    Vitest suite (workerd runtime, real bindings)
 public/                  Static homepage, served at / by Workers Static Assets
+docs/hosts.md            How each reporting host installs & supervises the CLI
 docs/                    README screenshots (not deployed)
 migrations/              D1 schema, append-only (0003 rebuilt it, 0004
                          trimmed the audit log)
