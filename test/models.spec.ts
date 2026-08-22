@@ -25,6 +25,7 @@ describe("canonicalModel", () => {
     expect(canonicalModel("kimi-k2-instruct-0905")).toBe("kimi-k2");
     expect(canonicalModel("grok-4.5-build")).toBe("grok-4.5");
     expect(canonicalModel("cursor-grok-4.5")).toBe("grok-4.5");
+    expect(canonicalModel("muse-spark-1.2-contributor")).toBe("muse-spark-1.2");
   });
 
   it("applies aliases after suffix stripping too", () => {
@@ -63,6 +64,8 @@ describe("canonicalProvider", () => {
     expect(canonicalProvider("unknown", "gemini-3-pro")).toBe("google");
     expect(canonicalProvider("", "grok-4.5")).toBe("xai");
     expect(canonicalProvider("cursor", "cursor-grok-4.5")).toBe("xai");
+    expect(canonicalProvider("opencode-go", "muse-spark-1.2-contributor")).toBe("meta");
+    expect(canonicalProvider("opencode-go", "ox-alpha")).toBe("openrouter");
   });
 
   it("keeps gateway ids for models the rules cannot place", () => {
@@ -100,6 +103,8 @@ describe("inferProviderFromModel", () => {
     expect(inferProviderFromModel("deepseek-v3.2")).toBe("deepseek");
     expect(inferProviderFromModel("qwen3-coder")).toBe("alibaba");
     expect(inferProviderFromModel("mimo-v2.5")).toBe("xiaomi");
+    expect(inferProviderFromModel("muse-spark-1.2")).toBe("meta");
+    expect(inferProviderFromModel("ox-alpha")).toBe("openrouter");
   });
 
   it("requires delimiters on short tokens", () => {

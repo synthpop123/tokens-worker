@@ -68,6 +68,8 @@ const ALIASES = new Map<string, string>([
   ["grok-4.5-build", "grok-4.5"],
   // Cursor prefixes the vendor model id when served through its own routing.
   ["cursor-grok-4.5", "grok-4.5"],
+  // Meta Muse Spark contributor tier shares one canonical id.
+  ["muse-spark-1.2-contributor", "muse-spark-1.2"],
 ]);
 
 const PRODUCT_TIER_MODELS = /^qwen.*-(?:plus|max)$/i;
@@ -162,7 +164,10 @@ export function inferProviderFromModel(model: string): string | null {
   if (m.includes("deepseek")) return "deepseek";
   if (m.includes("minimax")) return "minimax";
   if (m.includes("mistral") || m.includes("mixtral")) return "mistral";
-  if (m.includes("llama") || containsDelimited(m, "meta")) return "meta";
+  if (m.includes("llama") || containsDelimited(m, "meta") || m.includes("muse"))
+    return "meta";
+  // OpenCode Go anonymous OpenRouter routes (Ox Alpha, ...).
+  if (m === "ox-alpha" || /^ox-[a-z0-9-]+$/.test(m)) return "openrouter";
   if (m.includes("qwen")) return "alibaba";
   if (m.includes("fugu")) return "sakana";
   if (containsDelimited(m, "kimi")) return "moonshotai";
