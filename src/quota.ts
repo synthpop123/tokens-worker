@@ -1,7 +1,7 @@
 /**
- * POST /api/quota — the subscription-quota snapshots behind the tokens
- * page's plan cards: how much of a plan's rate-limit window is spent,
- * when it resets, and how many manual resets are left.
+ * POST /api/quota/:plan — the subscription-quota snapshots behind the
+ * tokens page's plan cards: how much of a plan's rate-limit window is
+ * spent, when it resets, and how many manual resets are left.
  *
  * The numbers come from the vendors, but no vendor credential ever
  * leaves the machine that holds it. One collector (OracleARM, the box

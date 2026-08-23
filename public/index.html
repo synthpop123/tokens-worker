@@ -54,11 +54,9 @@
     --gray-1:  light-dark(#fcfcfc, #111111);
     --gray-2:  light-dark(#f9f9f9, #191919);
     --gray-3:  light-dark(#f0f0f0, #222222);
-    --gray-4:  light-dark(#e8e8e8, #2a2a2a);
     --gray-5:  light-dark(#e0e0e0, #313131);
     --gray-6:  light-dark(#d9d9d9, #3a3a3a);
     --gray-7:  light-dark(#cecece, #484848);
-    --gray-9:  light-dark(#8d8d8d, #6e6e6e);
     --gray-11: light-dark(#646464, #b4b4b4);
     --gray-12: light-dark(#202020, #eeeeee);
 
@@ -938,7 +936,9 @@ npx wrangler d1 execute tokens-usage --remote \
         Workers Builds, whose build command runs the full gate — type checks plus the vitest
         suite (unit tests for the merge engine, validation and canonicalization; integration
         tests over real D1/KV/R2 bindings) — so a red check blocks the deploy. CI runs the same
-        gate on every push. Manual <code>wrangler deploy</code> is an emergency escape hatch only.
+        gate on every push. There is deliberately no manual deploy path: a hand-run
+        <code>wrangler deploy</code> puts code live that Git doesn't know about, and the next
+        push silently overwrites it.
       </li>
       <li>
         Backups are layered — D1 Time Travel covers the last 30 days, the daily R2 export covers

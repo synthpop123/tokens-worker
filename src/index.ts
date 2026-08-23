@@ -27,12 +27,14 @@
  * cron needed, submissions are the only write event and devices report
  * every 30 minutes.
  *
- * The one write that is not a submission is POST /api/quota: the tokens
- * page also shows how much of the Codex subscription's weekly window is
- * spent, a number no session log contains. A collector reads it from the
- * vendor on the machine that holds the credential and reports it here,
- * so this Worker stores no vendor secret and runs no scheduled job for
- * it. It refreshes the same KV payload by the same event-driven rule.
+ * The writes that are not submissions are the quota reports (POST
+ * /api/quota/:plan, one route per subscription — Codex and Claude): the
+ * tokens page also shows how much of each plan's rate-limit window is
+ * spent, numbers no session log contains. A collector reads each vendor
+ * on the machine that holds that credential and reports the percentages
+ * here — one write per plan, to that plan's own KV key — so this Worker
+ * stores no vendor secret and runs no scheduled job. Every accepted
+ * report refreshes the same KV payload by the same event-driven rule.
  *
  * `/` serves the static homepage (public/index.html) through Workers Static
  * Assets, which matches before this router runs. Not implemented: the
