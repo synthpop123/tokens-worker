@@ -77,6 +77,11 @@ type Narrowed = { plan: string | null; windows: QuotaWindow[]; resetCredits: str
 
 type Narrow = (body: Record<string, unknown>) => Narrowed | string;
 
+/** The CLI prints the window's length ("5h") where Anthropic names the
+ *  session; two cards side by side should agree. An unlisted label is
+ *  published as it came. */
+const CODEX_LABELS = new Map([["5h", "Session"]]);
+
 /**
  * `tokens codex status --json` — `{usage: {plan, metrics: [...], ...}}`.
  * Its `email` and `credit_status` are dropped: one is identity, the
@@ -93,7 +98,8 @@ const narrowCodex: Narrow = (body) => {
   if (Array.isArray(usage.metrics)) {
     for (const metric of usage.metrics) {
       if (!isRecord(metric) || typeof metric.label !== "string" || metric.label === "") continue;
-      const window = toWindow(metric.label, metric.used_percent, metric.resets_at);
+      const label = CODEX_LABELS.get(metric.label) ?? metric.label;
+      const window = toWindow(label, metric.used_percent, metric.resets_at);
       if (window) windows.push(window);
     }
   }

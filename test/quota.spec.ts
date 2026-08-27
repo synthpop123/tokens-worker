@@ -85,8 +85,18 @@ describe("POST /api/quota/codex", () => {
     const plan = await planOf("openai");
     expect((await site()).quota).toHaveLength(1);
     expect(plan.plan).toBe("Pro");
-    expect(plan.windows.map((w: any) => w.label)).toEqual(["5h", "Weekly"]);
+    // The CLI's "5h" is published under the name the Claude card uses.
+    expect(plan.windows.map((w: any) => w.label)).toEqual(["Session", "Weekly"]);
     expect(plan.resetCredits).toEqual([]);
+  });
+
+  it("publishes a window label it does not know as the CLI sent it", async () => {
+    const payload = quotaPayload();
+    (payload.usage as Record<string, unknown>).metrics = [
+      { label: "Monthly", used_percent: 12, resets_at: "2026-09-01T00:00:00Z" },
+    ];
+    await reportQuota(payload);
+    expect((await planOf("openai")).windows[0].label).toBe("Monthly");
   });
 
   it("skips a window it cannot read without losing the ones it can", async () => {
