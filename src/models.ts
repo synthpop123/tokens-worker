@@ -3,7 +3,7 @@
  *
  * The CLIs report one model id per (model x reasoning effort x serving
  * tier): `claude-fable-5-thinking-max`, `gpt-5-codex-high`,
- * `composer-2-fast`, ... For aggregate views those are all the same
+ * `composer-2-fast`, `grok-bot-default`, ... For aggregate views those are all the same
  * model, so /api/site canonicalizes ids *before* aggregating — which is
  * why its per-day model slices agree with its byModel breakdown.
  *
@@ -26,8 +26,9 @@
  *
  * Maintenance: when a new model shows up with a spelling the rules get
  * wrong, add an ALIASES entry. Mapping a raw name to itself pins it and
- * skips the suffix rules entirely. Family-wide product tiers that resemble
- * effort suffixes belong in PRODUCT_TIER_MODELS instead (Qwen Plus/Max).
+ * skips the suffix rules entirely (and the Cursor prefix). Family-wide
+ * product tiers that resemble effort suffixes belong in
+ * PRODUCT_TIER_MODELS instead (Qwen Plus/Max).
  * When a new vendor's models appear behind a gateway provider, extend
  * inferProviderFromModel (keep its family recognition in step with the CLI's
  * provider_identity.rs; this Worker normalizes the final vendor ids).
@@ -41,7 +42,7 @@ const SUFFIX_RULES: RegExp[] = [
   new RegExp(`-(?:${EFFORT})-thinking$`), // ...-high-thinking
   new RegExp(`-thinking(?:-(?:${EFFORT}))?$`), // ...-thinking[-max]
   new RegExp(`-(?:${EFFORT})$`), // ...-medium (bare effort)
-  /-(?:fast|free)$/, // serving tier
+  /-(?:fast|free|default)$/, // serving tier, and the grok CLI's "no tier chosen"
 ];
 
 /** Model ids arrive from CLI payloads, so every lookup table keyed by one
@@ -66,19 +67,28 @@ const ALIASES = new Map<string, string>([
   // The grok CLI spells its agentic tier as a "-build" model (reported as
   // grok-4.5-build-free; the suffix rules strip the serving tier first).
   ["grok-4.5-build", "grok-4.5"],
-  // Cursor prefixes the vendor model id when served through its own routing.
-  ["cursor-grok-4.5", "grok-4.5"],
   // Meta Muse Spark contributor tier shares one canonical id.
   ["muse-spark-1.2-contributor", "muse-spark-1.2"],
 ]);
 
 const PRODUCT_TIER_MODELS = /^qwen.*-(?:plus|max)$/i;
 
+/**
+ * Cursor prefixes the vendor's model id when it serves one through its own
+ * routing (`cursor-grok-4.6`), so the same model arrives under two names
+ * depending on the client. The prefix only comes off when what is left is a
+ * model the vendor rules recognize — Cursor's own models (`cursor-small`)
+ * are not a prefixed anything, and stripping would leave them unreadable.
+ */
+const CURSOR_PREFIX = /^cursor-/;
+
 export function canonicalModel(raw: string): string {
   const pinned = ALIASES.get(raw);
   if (pinned) return pinned;
   if (PRODUCT_TIER_MODELS.test(raw)) return raw;
   let name = raw;
+  const unprefixed = name.replace(CURSOR_PREFIX, "");
+  if (unprefixed !== name && inferProviderFromModel(unprefixed)) name = unprefixed;
   for (let prev = ""; prev !== name; ) {
     prev = name;
     for (const rule of SUFFIX_RULES) name = name.replace(rule, "");

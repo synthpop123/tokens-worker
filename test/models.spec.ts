@@ -14,6 +14,8 @@ describe("canonicalModel", () => {
     expect(canonicalModel("composer-2-fast")).toBe("composer-2");
     expect(canonicalModel("gpt-5-high-thinking")).toBe("gpt-5");
     expect(canonicalModel("kimi-k2-free")).toBe("kimi-k2");
+    expect(canonicalModel("grok-bot-default")).toBe("grok-bot");
+    expect(canonicalModel("grok-bot-default-thinking")).toBe("grok-bot");
   });
 
   it("maps aliased spellings (family-last Anthropic ids, dated snapshots)", () => {
@@ -24,8 +26,14 @@ describe("canonicalModel", () => {
     expect(canonicalModel("kimi-k2-instruct")).toBe("kimi-k2");
     expect(canonicalModel("kimi-k2-instruct-0905")).toBe("kimi-k2");
     expect(canonicalModel("grok-4.5-build")).toBe("grok-4.5");
-    expect(canonicalModel("cursor-grok-4.5")).toBe("grok-4.5");
     expect(canonicalModel("muse-spark-1.2-contributor")).toBe("muse-spark-1.2");
+  });
+
+  it("strips Cursor's prefix from vendor models it routes, but not its own", () => {
+    expect(canonicalModel("cursor-grok-4.5")).toBe("grok-4.5");
+    expect(canonicalModel("cursor-grok-4.6")).toBe("grok-4.6");
+    expect(canonicalModel("cursor-claude-4-5-opus-thinking")).toBe("claude-opus-4-5");
+    expect(canonicalModel("cursor-small")).toBe("cursor-small");
   });
 
   it("applies aliases after suffix stripping too", () => {
