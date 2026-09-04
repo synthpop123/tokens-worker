@@ -115,6 +115,9 @@ const GATEWAY_PROVIDERS = new Set([
   "opencode",
   "opencode-go",
   "zed.dev",
+  // CLIProxyAPI relays to the real vendors; pi reports it as a custom
+  // provider, so the id names the relay, never who served the model.
+  "cliproxyapi",
   "unknown",
   "",
 ]);
@@ -190,7 +193,8 @@ export function inferProviderFromModel(model: string): string | null {
  * Canonical provider id: alias spellings collapse into the vendor, and —
  * when the caller supplies the row's model — provider ids that are not a
  * vendor claim get re-attributed by model name. Two ways a row qualifies:
- * a gateway id (zed.dev, opencode, opencode-go, cursor, unknown), or a
+ * a gateway id (zed.dev, opencode, opencode-go, cursor, cliproxyapi,
+ * unknown), or a
  * client whose models the user configured, where the id names the
  * endpoint's dialect. Models the rules can't place keep the reported id.
  * Without model context (already-aggregated ids) nothing is re-attributed.

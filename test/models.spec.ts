@@ -74,6 +74,9 @@ describe("canonicalProvider", () => {
     expect(canonicalProvider("cursor", "cursor-grok-4.5")).toBe("xai");
     expect(canonicalProvider("opencode-go", "muse-spark-1.2-contributor")).toBe("meta");
     expect(canonicalProvider("opencode-go", "ox-alpha")).toBe("openrouter");
+    // pi's CLIProxyAPI custom provider only relays.
+    expect(canonicalProvider("cliproxyapi", "gpt-5.6-sol", "pi")).toBe("openai");
+    expect(canonicalProvider("cliproxyapi", "claude-opus-5", "pi")).toBe("anthropic");
   });
 
   it("keeps gateway ids for models the rules cannot place", () => {
@@ -82,6 +85,7 @@ describe("canonicalProvider", () => {
     expect(canonicalProvider("cursor", "composer-2.5")).toBe("cursor");
     expect(canonicalProvider("cursor", "auto")).toBe("cursor");
     expect(canonicalProvider("cursor", "premium-tool-call")).toBe("cursor");
+    expect(canonicalProvider("cliproxyapi", "big-pickle", "pi")).toBe("cliproxyapi");
   });
 
   it("never re-attributes vendor ids, even with model context", () => {
