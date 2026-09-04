@@ -74,7 +74,6 @@ describe("canonicalProvider", () => {
     expect(canonicalProvider("cursor", "cursor-grok-4.5")).toBe("xai");
     expect(canonicalProvider("opencode-go", "muse-spark-1.2-contributor")).toBe("meta");
     expect(canonicalProvider("opencode-go", "ox-alpha")).toBe("openrouter");
-    // pi's CLIProxyAPI custom provider only relays.
     expect(canonicalProvider("cliproxyapi", "gpt-5.6-sol", "pi")).toBe("openai");
     expect(canonicalProvider("cliproxyapi", "claude-opus-5", "pi")).toBe("anthropic");
   });

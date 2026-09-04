@@ -115,8 +115,6 @@ const GATEWAY_PROVIDERS = new Set([
   "opencode",
   "opencode-go",
   "zed.dev",
-  // CLIProxyAPI relays to the real vendors; pi reports it as a custom
-  // provider, so the id names the relay, never who served the model.
   "cliproxyapi",
   "unknown",
   "",
