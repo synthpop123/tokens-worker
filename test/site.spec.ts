@@ -32,6 +32,8 @@ const SPAN_KEYS = ["days", "firstDate", "lastDate"] as const;
 /** The exact spine the homepage reads unconditionally. */
 function expectSiteContract(site: Record<string, any>): void {
   expect(site.schemaVersion).toBe(SITE_VERSION);
+  // The homepage ages device dots by this; a duration, not a verdict.
+  expect(site.deviceOnlineWithinMs).toBe(45 * 60_000);
   expect(typeof site.generatedAt).toBe("string");
   expect(site.today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 

@@ -46,7 +46,8 @@ import type { Env } from "./http";
 import { json, CORS_HEADERS } from "./http";
 import { handleSubmit, handleAuthToken, handleDeleteSubmittedData } from "./submit";
 import { handleQuota } from "./quota";
-import { handleSite, QUOTA_PROVIDERS } from "./site";
+import { handleSite } from "./site";
+import { QUOTA_PROVIDERS } from "./quota-registry";
 
 export type { Env };
 

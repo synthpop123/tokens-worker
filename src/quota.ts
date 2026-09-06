@@ -26,126 +26,15 @@
  * and /api/site is a contract this Worker owns. Narrowing each by hand is
  * what keeps an upstream field rename from silently becoming a homepage
  * change — and it is where the account's identity is dropped, because
- * the endpoint this feeds is public and unauthenticated.
+ * the endpoint this feeds is public and unauthenticated. The narrowers
+ * live with the provider registry (quota-registry.ts); this module is
+ * only the route around them.
  */
 
 import type { Env } from "./http";
 import { json, isAuthorized } from "./http";
-// The payload's shape — and the KV keys it lives under — belong to the
-// module that composes /api/site, so this dependency stays one-way.
-import type { QuotaPlan, QuotaWindow } from "./site";
-import { QUOTA_PROVIDERS, refreshSiteCache } from "./site";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Any parseable instant in, ISO-8601 UTC out; anything else is null.
- *  The vendors report offsets ("+00:00") and sub-second precision, and
- *  the payload should read the same whichever it sent. */
-function isoOrNull(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
-}
-
-function toWindow(label: string, used: unknown, resetsAt: unknown): QuotaWindow | null {
-  if (typeof used !== "number" || !Number.isFinite(used)) return null;
-  return {
-    label,
-    usedPercent: Math.min(100, Math.max(0, used)),
-    resetsAt: isoOrNull(resetsAt),
-  };
-}
-
-/**
- * A subscription tier as the payload publishes it. The vendors disagree
- * about case — the Codex CLI capitalizes ("Team"), Anthropic stores the
- * raw enum ("pro") — and two cards side by side should not advertise
- * that. Only the first letter is touched: "Pro", "Max", "Team", and
- * anything a vendor deliberately cased stays as it came.
- */
-function tierOf(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const tier = value.trim();
-  return tier === "" ? null : tier[0].toUpperCase() + tier.slice(1);
-}
-
-/** What a narrowing function returns before the plan's identity and
- *  capture time are attached. */
-type Narrowed = { plan: string | null; windows: QuotaWindow[]; resetCredits: string[] };
-
-type Narrow = (body: Record<string, unknown>) => Narrowed | string;
-
-/** The CLI prints the window's length ("5h") where Anthropic names the
- *  session; two cards side by side should agree. An unlisted label is
- *  published as it came. */
-const CODEX_LABELS = new Map([["5h", "Session"]]);
-
-/**
- * `tokens codex status --json` — `{usage: {plan, metrics: [...], ...}}`.
- * Its `email` and `credit_status` are dropped: one is identity, the
- * other has no card to appear on.
- */
-const narrowCodex: Narrow = (body) => {
-  if (!isRecord(body.usage)) return "Expected `tokens codex status --json` output: {usage: {…}}";
-  const usage = body.usage;
-
-  // Malformed *individual* windows are skipped rather than fatal: a
-  // future CLI reporting a third window in a shape this does not
-  // understand should cost that window, not the whole reading.
-  const windows: QuotaWindow[] = [];
-  if (Array.isArray(usage.metrics)) {
-    for (const metric of usage.metrics) {
-      if (!isRecord(metric) || typeof metric.label !== "string" || metric.label === "") continue;
-      const label = CODEX_LABELS.get(metric.label) ?? metric.label;
-      const window = toWindow(label, metric.used_percent, metric.resets_at);
-      if (window) windows.push(window);
-    }
-  }
-
-  // Only unspent credits: a redeemed one is history, and the card counts
-  // what is still available to spend.
-  const resetCredits: string[] = [];
-  const credits = isRecord(usage.reset_credits) ? usage.reset_credits.credits : undefined;
-  if (Array.isArray(credits)) {
-    for (const credit of credits) {
-      if (!isRecord(credit) || credit.status !== "available") continue;
-      const expiresAt = isoOrNull(credit.expires_at);
-      if (expiresAt !== null) resetCredits.push(expiresAt);
-    }
-  }
-  resetCredits.sort();
-
-  return { plan: tierOf(usage.plan), windows, resetCredits };
-};
-
-/**
- * api.anthropic.com/api/oauth/usage — `{five_hour, seven_day, limits,
- * spend, …}`. The named windows are read rather than the parallel
- * `limits` array, which says the same thing through an open-ended `kind`
- * enum. Claude has no manual-reset credits, so that list is always
- * empty; the plan tier is not in this response, so the collector sends
- * the `subscriptionType` it read beside the credential.
- */
-const narrowClaude: Narrow = (body) => {
-  const windows: QuotaWindow[] = [];
-  for (const [key, label] of [
-    ["five_hour", "Session"],
-    ["seven_day", "Weekly"],
-  ] as const) {
-    const limit = body[key];
-    if (!isRecord(limit)) continue;
-    const window = toWindow(label, limit.utilization, limit.resets_at);
-    if (window) windows.push(window);
-  }
-  return { plan: tierOf(body.plan), windows, resetCredits: [] };
-};
-
-const NARROW = new Map<string, Narrow>([
-  ["codex", narrowCodex],
-  ["claude", narrowClaude],
-]);
+import { isRecord, QUOTA_PROVIDERS, type QuotaPlan } from "./quota-registry";
+import { refreshSiteCache } from "./site";
 
 /**
  * The reported provider rides in the path: `POST /api/quota/codex`. It
@@ -159,8 +48,7 @@ export async function handleQuota(request: Request, env: Env): Promise<Response>
 
   const id = new URL(request.url).pathname.slice("/api/quota/".length);
   const known = QUOTA_PROVIDERS.get(id);
-  const narrow = NARROW.get(id);
-  if (!known || !narrow) {
+  if (!known) {
     const supported = [...QUOTA_PROVIDERS.keys()].join(", ");
     return json({ error: `Unsupported quota provider, expected one of: ${supported}` }, 404);
   }
@@ -173,7 +61,7 @@ export async function handleQuota(request: Request, env: Env): Promise<Response>
   }
   if (!isRecord(body)) return json({ error: "Expected a JSON object" }, 400);
 
-  const narrowed = narrow(body);
+  const narrowed = known.narrow(body);
   if (typeof narrowed === "string") return json({ error: narrowed }, 400);
   // Windows are the whole point of a snapshot, so a body without a
   // usable one is rejected rather than stored as an empty card.
@@ -182,7 +70,8 @@ export async function handleQuota(request: Request, env: Env): Promise<Response>
   }
 
   const plan: QuotaPlan = {
-    ...known,
+    provider: known.provider,
+    label: known.label,
     // The server clock, never the collector's: `capturedAt` is what the
     // dashboard ages the card by, and a reporter with a skewed clock
     // could otherwise present a stale snapshot as fresh.

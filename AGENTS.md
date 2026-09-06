@@ -31,12 +31,12 @@ push: the Workers Builds log prints the executed build command, so a
   bindings. GitHub Actions runs the same gate.
 - `/api/site` is a versioned cross-repo contract: the body carries
   `schemaVersion` (`SITE_VERSION` in `src/site.ts`), which the homepage
-  (`../homepage/src/lib/client/tokens.ts`, `SITE_SCHEMA_VERSION`)
+  (`../homepage/src/lib/client/tokens/schema.ts`, `SITE_SCHEMA_VERSION`)
   validates strictly and keys its sessionStorage cache by. Bump both
   together on any shape change and refresh the homepage's committed
   fixture (`src/lib/client/tokens.site-fixture.json`) by capturing the
   live endpoint, never by hand; the producer shape is pinned by
-  `test/site.spec.ts`, the consumer by its `tokens.test.ts`. Independent
+  `test/site.spec.ts`, the consumer by its `tokens/contract.test.ts`. Independent
   deploys mean a bump is never atomic — see the README's cross-repo
   section for the rollout order.
 - The operative half of that rule is **both together**. The consumer
@@ -56,9 +56,11 @@ push: the Workers Builds log prints the executed build command, so a
   Claude via `scripts/report-claude-quota.py` (Anthropic's
   `/api/oauth/usage`), so no OAuth credential ever leaves that box and
   the Worker runs no cron. Four rules hold it together: each vendor's
-  body is narrowed by hand in `src/quota.ts` (an upstream rename must
-  become a 400, never a silent contract change — and that is where
-  account identity is dropped, since `/api/site` is public); **one KV
+  body is narrowed by hand in `src/quota-registry.ts`, the one place a
+  provider is declared — id, vendor, label and narrower together, read by
+  both the route and the composer (an upstream rename must become a 400,
+  never a silent contract change — and that is where account identity is
+  dropped, since `/api/site` is public); **one KV
   key per provider** (`quota:<provider>`), never one shared snapshot,
   because the legs use different credentials and must fail
   independently; no D1, because a percentage a collector can re-fetch is

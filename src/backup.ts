@@ -71,7 +71,7 @@ export async function ensureDailyBackup(env: Env): Promise<void> {
   const key = `${BACKUP_PREFIX}${today}.json`;
   if ((await env.ARCHIVE.head(key)) !== null) return;
 
-  const [usage, activity, devices] = await env.DB.batch([
+  const [usage, activity, devices, migration] = await env.DB.batch([
     env.DB.prepare(
       `SELECT device_id, date, client, model, provider, input, output,
               cache_read, cache_write, reasoning, messages, cost, parser_revision
@@ -81,13 +81,16 @@ export async function ensureDailyBackup(env: Env): Promise<void> {
       `SELECT device_id, date, active_time_ms FROM daily_activity ORDER BY device_id, date`
     ),
     env.DB.prepare(`SELECT * FROM devices`),
+    env.DB.prepare(`SELECT name FROM d1_migrations ORDER BY id DESC LIMIT 1`),
   ]);
 
   await env.ARCHIVE.put(
     key,
     JSON.stringify({
       exportedAt: new Date().toISOString(),
-      schema: "0004_audit_retention",
+      // The last migration D1 recorded — the schema the rows below are in,
+      // read from the database rather than from a constant to keep in step.
+      schema: (migration.results[0] as { name: string } | undefined)?.name.replace(/\.sql$/, "") ?? null,
       daily_usage: usage.results,
       daily_activity: activity.results,
       devices: devices.results,

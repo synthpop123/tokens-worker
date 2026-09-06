@@ -123,35 +123,23 @@ function chunk<T>(items: T[], size: number): T[][] {
   return out;
 }
 
-export async function handleSubmit(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  if (!(await isAuthorized(request, env))) {
-    return json({ error: "Invalid API token" }, 401);
-  }
+/** One accepted submission, as the write plan and the archive see it. */
+interface Submission {
+  payload: SubmissionPayload;
+  deviceId: string;
+  deviceName: string | null;
+  submissionId: string;
+  receivedAt: number;
+}
 
-  const rawBody = await request.text();
-  let payload: SubmissionPayload;
-  try {
-    payload = JSON.parse(rawBody) as SubmissionPayload;
-  } catch {
-    return json({ error: "Invalid JSON body" }, 400);
-  }
+/** What D1 already holds for the submitting device. */
+interface DeviceRecord {
+  stored: DeviceState;
+  storedActivity: Map<string, number>;
+  mode: "create" | "merge";
+}
 
-  normalizePayload(payload);
-  const { errors, warnings } = validatePayload(payload);
-  if (errors.length > 0) {
-    return json({ error: "Validation failed", details: errors.slice(0, 50) }, 400);
-  }
-  const contributions = payload.contributions ?? [];
-  if (contributions.length === 0) {
-    return json({ error: "No contribution data to submit" }, 400);
-  }
-
-  const deviceId = payload.device?.id?.trim() || LEGACY_DEVICE_KEY;
-  const deviceName =
-    payload.device?.name?.trim() ||
-    (deviceId === LEGACY_DEVICE_KEY ? LEGACY_DEVICE_NAME : null);
-
-  // ---- Read stored state for this device --------------------------------
+async function loadDevice(env: Env, deviceId: string): Promise<DeviceRecord> {
   const [usageRes, activityRes] = await env.DB.batch([
     env.DB
       .prepare(
@@ -171,12 +159,26 @@ export async function handleSubmit(request: Request, env: Env, ctx: ExecutionCon
     storedActivity.set(m.date, m.active_time_ms);
   }
 
-  const mode = storedRows.length === 0 ? "create" : "merge";
+  return { stored, storedActivity, mode: storedRows.length === 0 ? "create" : "merge" };
+}
+
+/**
+ * Merge the submission into the stored state day by day (merge.ts owns the
+ * rules). Returns only the days whose stored rows would change, so an
+ * unchanged rescan — the common case — plans no usage writes at all.
+ * Warnings are appended to the validator's list so the response carries
+ * both in one place.
+ */
+function mergeSubmission(
+  payload: SubmissionPayload,
+  stored: DeviceState,
+  warnings: string[]
+): Map<string, DayState> {
+  const contributions = payload.contributions ?? [];
   const floors = deriveRevisionFloors(stored);
   const submittedClients = collectSubmittedClients(payload.summary?.clients, contributions);
   const coverages = extractCoverages(payload.clientManifest?.clients);
 
-  // ---- Merge day by day ---------------------------------------------------
   const rejectedClients = new Set<string>();
   const changedDays = new Map<string, DayState>();
   const incomingDates = new Set<string>();
@@ -227,12 +229,22 @@ export async function handleSubmit(request: Request, env: Env, ctx: ExecutionCon
     }
   }
 
-  // ---- Plan writes --------------------------------------------------------
-  // Everything lands in one D1 batch — one transaction, so a submission
-  // either applies fully or not at all. Set-based statements (see
-  // INSERT_USAGE_SQL) keep the batch a handful of queries even for a
-  // full-history first upload.
-  const now = Date.now();
+  return changedDays;
+}
+
+/**
+ * Every write the submission causes, in the order one D1 batch runs them —
+ * one transaction, so a submission either applies fully or not at all.
+ * Set-based statements (see INSERT_USAGE_SQL) keep the batch a handful of
+ * queries even for a full-history first upload.
+ */
+function planStatements(
+  env: Env,
+  { payload, deviceId, deviceName, submissionId, receivedAt: now }: Submission,
+  { storedActivity, mode }: DeviceRecord,
+  changedDays: Map<string, DayState>
+): D1PreparedStatement[] {
+  const contributions = payload.contributions ?? [];
   const statements: D1PreparedStatement[] = [];
 
   // One JSON row per (client, model, provider) of every changed day,
@@ -314,7 +326,6 @@ export async function handleSubmit(request: Request, env: Env, ctx: ExecutionCon
   );
 
   // Audit row.
-  const submissionId = crypto.randomUUID();
   const dates = contributions.map((d) => d.date).sort();
   statements.push(
     env.DB
@@ -353,7 +364,78 @@ export async function handleSubmit(request: Request, env: Env, ctx: ExecutionCon
       .bind(now - AUDIT_RETENTION_DAYS * 86_400_000)
   );
 
-  await env.DB.batch(statements);
+  return statements;
+}
+
+/** Account-wide totals for the response body (the official server
+ *  recalculates these too); one aggregate query, clients folded in as a
+ *  JSON array so the distinct list does not cost a second statement. */
+async function accountMetrics(db: D1Database) {
+  const metrics = await db
+    .prepare(
+      `SELECT
+         coalesce(sum(${TOKENS_SQL}), 0) AS totalTokens,
+         coalesce(sum(u.cost), 0) AS totalCost,
+         min(u.date) AS dateStart,
+         max(u.date) AS dateEnd,
+         ${ACTIVE_DAYS_SQL},
+         json_group_array(DISTINCT u.client) AS clients
+       FROM daily_usage u`
+    )
+    .first<{
+      totalTokens: number;
+      totalCost: number;
+      dateStart: string | null;
+      dateEnd: string | null;
+      activeDays: number;
+      clients: string;
+    }>();
+  return {
+    totalTokens: metrics?.totalTokens ?? 0,
+    totalCost: metrics?.totalCost ?? 0,
+    dateRange: { start: metrics?.dateStart ?? null, end: metrics?.dateEnd ?? null },
+    activeDays: metrics?.activeDays ?? 0,
+    clients: (JSON.parse(metrics?.clients ?? "[]") as string[]).sort(),
+  };
+}
+
+export async function handleSubmit(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  if (!(await isAuthorized(request, env))) {
+    return json({ error: "Invalid API token" }, 401);
+  }
+
+  const rawBody = await request.text();
+  let payload: SubmissionPayload;
+  try {
+    payload = JSON.parse(rawBody) as SubmissionPayload;
+  } catch {
+    return json({ error: "Invalid JSON body" }, 400);
+  }
+
+  normalizePayload(payload);
+  const { errors, warnings } = validatePayload(payload);
+  if (errors.length > 0) {
+    return json({ error: "Validation failed", details: errors.slice(0, 50) }, 400);
+  }
+  const contributions = payload.contributions ?? [];
+  if (contributions.length === 0) {
+    return json({ error: "No contribution data to submit" }, 400);
+  }
+
+  const deviceId = payload.device?.id?.trim() || LEGACY_DEVICE_KEY;
+  const submission: Submission = {
+    payload,
+    deviceId,
+    deviceName:
+      payload.device?.name?.trim() ||
+      (deviceId === LEGACY_DEVICE_KEY ? LEGACY_DEVICE_NAME : null),
+    submissionId: crypto.randomUUID(),
+    receivedAt: Date.now(),
+  };
+
+  const device = await loadDevice(env, deviceId);
+  const changedDays = mergeSubmission(payload, device.stored, warnings);
+  await env.DB.batch(planStatements(env, submission, device, changedDays));
 
   // Archive the accepted payload verbatim. Submissions are full rescans,
   // so the latest one per device reproduces its whole history — enough to
@@ -361,7 +443,10 @@ export async function handleSubmit(request: Request, env: Env, ctx: ExecutionCon
   ctx.waitUntil(
     env.ARCHIVE.put(`raw/${deviceId}/latest.json`, rawBody, {
       httpMetadata: { contentType: "application/json" },
-      customMetadata: { submissionId, receivedAt: String(now) },
+      customMetadata: {
+        submissionId: submission.submissionId,
+        receivedAt: String(submission.receivedAt),
+      },
     })
   );
 
@@ -371,40 +456,12 @@ export async function handleSubmit(request: Request, env: Env, ctx: ExecutionCon
   ctx.waitUntil(refreshSiteCache(env));
   ctx.waitUntil(ensureDailyBackup(env));
 
-  // ---- Account-wide metrics for the response (official recalculates) -----
-  const metrics = await env.DB
-    .prepare(
-      `SELECT
-         coalesce(sum(${TOKENS_SQL}), 0) AS totalTokens,
-         coalesce(sum(u.cost), 0) AS totalCost,
-         min(u.date) AS dateStart,
-         max(u.date) AS dateEnd,
-         ${ACTIVE_DAYS_SQL}
-       FROM daily_usage u`
-    )
-    .first<{
-      totalTokens: number;
-      totalCost: number;
-      dateStart: string | null;
-      dateEnd: string | null;
-      activeDays: number;
-    }>();
-  const clientRows = await env.DB
-    .prepare(`SELECT DISTINCT client FROM daily_usage ORDER BY client`)
-    .all<{ client: string }>();
-
   return json({
     success: true,
-    submissionId,
+    submissionId: submission.submissionId,
     username: env.TOKENS_USERNAME,
-    metrics: {
-      totalTokens: metrics?.totalTokens ?? 0,
-      totalCost: metrics?.totalCost ?? 0,
-      dateRange: { start: metrics?.dateStart ?? null, end: metrics?.dateEnd ?? null },
-      activeDays: metrics?.activeDays ?? 0,
-      clients: clientRows.results.map((r) => r.client),
-    },
-    mode,
+    metrics: await accountMetrics(env.DB),
+    mode: device.mode,
     warnings: warnings.length > 0 ? warnings.slice(0, 50) : undefined,
   });
 }

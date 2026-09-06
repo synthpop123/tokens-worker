@@ -43,6 +43,7 @@ import {
   type Metrics,
 } from "./metrics";
 import { canonicalModel, canonicalProvider } from "./models";
+import { QUOTA_PROVIDERS, type QuotaPlan } from "./quota-registry";
 
 // The KV key never changes; the schema version rides in the response body
 // (`schemaVersion`, which the homepage validates and keys its cache by)
@@ -50,13 +51,19 @@ import { canonicalModel, canonicalProvider } from "./models";
 // instead of serving the previous schema until the next submission. Bump
 // SITE_VERSION on any shape or semantics change, in lockstep with the
 // homepage's SITE_SCHEMA_VERSION and its committed /api/site fixture
-// (homepage: src/lib/client/tokens.ts + .test.ts).
+// (homepage: src/lib/client/tokens/schema.ts + contract.test.ts).
 const SITE_KEY = "site";
-export const SITE_VERSION = 12;
+export const SITE_VERSION = 13;
 /** How long a PoP may serve its local copy of the KV entry before
  *  re-checking central storage — the global worst-case staleness after
  *  a submission rewrites the payload (30 is the API's minimum). */
 const KV_CACHE_TTL = 30;
+/** How recently a device must have reported to count as online: the
+ *  CLI's 30-minute cadence plus slack for a late run and KV propagation.
+ *  Shipped in the payload rather than hard-coded by each reader, and as
+ *  a duration rather than a verdict: the readers compare `lastSeen` to
+ *  their own clock, so a cached payload keeps aging correctly. */
+export const DEVICE_ONLINE_WITHIN_MS = 45 * 60_000;
 
 /**
  * Subscription quota is *reported*, not derived: no D1 table backs it,
@@ -76,43 +83,6 @@ const KV_CACHE_TTL = 30;
  * `capturedAt` is for.
  */
 const quotaKey = (provider: string) => `quota:${provider}`;
-
-/**
- * The subscriptions this Worker will store, keyed by the id a collector
- * reports. A Map, not an object: the key comes from a request body.
- * `provider` is the canonical vendor id used everywhere else in the
- * payload (so the dashboard reuses its brand marks), and `label` is what
- * the subscription calls itself — "Codex" is a plan, not a vendor.
- */
-export const QUOTA_PROVIDERS = new Map<string, { provider: string; label: string }>([
-  ["codex", { provider: "openai", label: "Codex" }],
-  ["claude", { provider: "anthropic", label: "Claude" }],
-]);
-
-/** One rate-limit window of a plan — Codex Team has just the weekly one,
- *  Claude Pro reports a 5-hour window beside it, so this is a list. */
-export interface QuotaWindow {
-  label: string;
-  usedPercent: number;
-  resetsAt: string | null;
-}
-
-export interface QuotaPlan {
-  /** Canonical vendor id, so the dashboard can reuse its provider marks. */
-  provider: string;
-  label: string;
-  plan: string | null;
-  /** Server clock at the moment this plan was reported. Per plan, not
-   *  per payload: two collectors on their own timers are two different
-   *  answers to "how old is this", and one of them can be hours stale
-   *  while the other is a minute old. */
-  capturedAt: string;
-  windows: QuotaWindow[];
-  /** Expiry of each unspent manual-reset credit, ascending. The count is
-   *  the list's length; storing both would be one number too many.
-   *  Empty for plans with no such thing (Claude has none). */
-  resetCredits: string[];
-}
 
 const RANGES = [
   { key: "day", days: 1 },
@@ -468,6 +438,7 @@ export async function composeSiteBody(env: Env, quota?: QuotaPlan): Promise<stri
   return JSON.stringify(
     {
       schemaVersion: SITE_VERSION,
+      deviceOnlineWithinMs: DEVICE_ONLINE_WITHIN_MS,
       generatedAt: new Date().toISOString(),
       today,
       quota: quotaPlans,

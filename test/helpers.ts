@@ -9,7 +9,7 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import worker from "../src/index";
 import type { SubmissionPayload } from "../src/payload";
-import { QUOTA_PROVIDERS } from "../src/site";
+import { QUOTA_PROVIDERS } from "../src/quota-registry";
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 

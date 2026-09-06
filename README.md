@@ -82,12 +82,12 @@ Every breakdown row carries the full metric set: `input`, `output`, `cacheRead`,
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/site` | Precomposed dashboard view, one request for the whole page: the reported `quota` plans (one per subscription, each with its own `capturedAt`; empty until a collector has spoken), per-range (`day`/`week`/`month`/`quarter`/`all`, where `day` is today in Asia/Shanghai — it backs the dashboard's Today section and is the only place the full metric set is split per model for a single day) totals + breakdowns (every row carries its usage span — `days`, `firstDate`, `lastDate`; model rows name the `providers` that served them, and **client and provider rows carry `models`** — the client × model and provider × model cells, the slices the marginals cannot reconstruct), the full daily series sliced **by provider, by client and by model** (canonical ids, `{tokens, cost}` each) with per-day `active` time, and the device inventory incl. CLI version, sessions, active-time metrics and MCP servers. Costs are rounded to microdollars. The whole payload is a view **as of today**: submissions may carry dates up to two days ahead (clock skew, timezones east of Asia/Shanghai), and those rows stay in D1 until their own day arrives rather than landing in a window that ends today. No filters; served from KV. The body carries `schemaVersion` — see [Cross-repo contract](#cross-repo-contract) |
+| `GET /api/site` | Precomposed dashboard view, one request for the whole page: the reported `quota` plans (one per subscription, each with its own `capturedAt`; empty until a collector has spoken), per-range (`day`/`week`/`month`/`quarter`/`all`, where `day` is today in Asia/Shanghai — it backs the dashboard's Today section and is the only place the full metric set is split per model for a single day) totals + breakdowns (every row carries its usage span — `days`, `firstDate`, `lastDate`; model rows name the `providers` that served them, and **client and provider rows carry `models`** — the client × model and provider × model cells, the slices the marginals cannot reconstruct), the full daily series sliced **by provider, by client and by model** (canonical ids, `{tokens, cost}` each) with per-day `active` time, and the device inventory incl. CLI version, sessions, active-time metrics and MCP servers, with `deviceOnlineWithinMs` — how recently a device must have reported to count as online, shipped as a duration so readers age a cached payload against their own clock. Costs are rounded to microdollars. The whole payload is a view **as of today**: submissions may carry dates up to two days ahead (clock skew, timezones east of Asia/Shanghai), and those rows stay in D1 until their own day arrives rather than landing in a window that ends today. No filters; served from KV. The body carries `schemaVersion` — see [Cross-repo contract](#cross-repo-contract) |
 | `GET /api/health` | Liveness check (`/` serves the static homepage) |
 
 ### Cross-repo contract
 
-`/api/site` is versioned: the body carries `schemaVersion` (`SITE_VERSION` in `src/site.ts`), which the homepage (`../homepage/src/lib/client/tokens.ts`, `SITE_SCHEMA_VERSION`) validates strictly and keys its cache by, so a stale cache or a mid-deploy mismatch falls back to a refetch instead of a renderer crash. Bump both together on any shape change and refresh the homepage's committed fixture (`src/lib/client/tokens.site-fixture.json`). The producer shape is pinned by `test/site.spec.ts`, the consumer by the homepage's `tokens.test.ts`.
+`/api/site` is versioned: the body carries `schemaVersion` (`SITE_VERSION` in `src/site.ts`), which the homepage (`../homepage/src/lib/client/tokens/schema.ts`, `SITE_SCHEMA_VERSION`) validates strictly and keys its cache by, so a stale cache or a mid-deploy mismatch falls back to a refetch instead of a renderer crash. Bump both together on any shape change and refresh the homepage's committed fixture (`src/lib/client/tokens.site-fixture.json`). The producer shape is pinned by `test/site.spec.ts`, the consumer by the homepage's `tokens/contract.test.ts`.
 
 The two repos deploy independently, so a bump has no atomic moment — whichever ships first talks to the other side's previous version for a minute or two, and visitors without a session cache see the fallback for that window. **Ship this Worker first**: the fixture has to be captured from a live endpoint already serving the new schema, so the producer leads and the page falls back until the homepage deploy lands (schemas 9 and 10 both went out this way). The window can be closed by temporarily letting the consumer's `isSite` accept the previous version alongside the new one and shipping the homepage first, but that only works for shapes the older reader survives, and it costs an extra round trip through both repos; at rest the consumer accepts exactly one version, which is what keeps the two sides honest.
 
@@ -117,7 +117,8 @@ everything to say anything. Separate keys mean a broken leg goes stale
 alone, visibly.
 
 Each vendor's body is its own shape and **nothing is passed through**.
-`src/quota.ts` narrows each by hand into the shape `/api/site` publishes —
+`src/quota-registry.ts` — the one place a provider is declared, with its
+vendor id, label and narrower — narrows each by hand into the shape `/api/site` publishes —
 which is where the account's identity is dropped, since that endpoint is
 public and unauthenticated, and where an upstream field rename becomes a
 400 instead of a silent homepage change. A report is a full overwrite of
@@ -229,6 +230,9 @@ src/models.ts            Canonical model/provider ids (suffix rules + alias
                          tables; extend ALIASES for new spellings)
 src/site.ts              /api/site — precomposed, schema-versioned dashboard
                          view (no-cache + ETag over KV over one D1 batch)
+src/quota-registry.ts    Subscription quota providers: id, vendor, label and
+                         the hand-written narrowing of each vendor's body
+src/quota.ts             POST /api/quota/:plan — one reported plan per KV key
 src/backup.ts            Daily usage-table export to R2 (pruned past 180
                          days) + full-wipe helper
 test/                    Vitest suite (workerd runtime, real bindings)

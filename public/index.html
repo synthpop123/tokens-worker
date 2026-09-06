@@ -1052,7 +1052,7 @@ npx wrangler d1 execute tokens-usage --remote \
         const devices = site.devices ?? [];
         const lastSeen = devices.reduce((max, d) => Math.max(max, d.lastSeen ?? 0), 0);
         const online = devices.filter(
-          (d) => d.lastSeen !== null && Date.now() - d.lastSeen < 45 * 60000
+          (d) => d.lastSeen !== null && Date.now() - d.lastSeen < site.deviceOnlineWithinMs
         ).length;
         set(
           "report",

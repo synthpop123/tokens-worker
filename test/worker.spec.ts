@@ -138,6 +138,7 @@ describe("submit flow", () => {
     await submit();
     const backups = await env.ARCHIVE.list({ prefix: "backup/" });
     const dump = JSON.parse(await (await env.ARCHIVE.get(backups.objects[0].key))!.text());
+    expect(dump.schema).toBe(env.TEST_MIGRATIONS.at(-1)!.name.replace(/\.sql$/, ""));
     expect(Object.keys(dump).sort()).toEqual([
       "daily_activity",
       "daily_usage",
