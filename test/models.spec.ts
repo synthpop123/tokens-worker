@@ -60,7 +60,7 @@ describe("canonicalProvider", () => {
     expect(canonicalProvider("")).toBe("");
   });
 
-  it("re-attributes gateway providers to the model's vendor", () => {
+  it("attributes a row to the vendor of its model, whatever served it", () => {
     expect(canonicalProvider("zed.dev", "claude-sonnet-5-thinking")).toBe("anthropic");
     expect(canonicalProvider("zed.dev", "gpt-5.5")).toBe("openai");
     expect(canonicalProvider("opencode", "glm-4.7")).toBe("zai");
@@ -74,29 +74,26 @@ describe("canonicalProvider", () => {
     expect(canonicalProvider("cursor", "cursor-grok-4.5")).toBe("xai");
     expect(canonicalProvider("opencode-go", "muse-spark-1.2-contributor")).toBe("meta");
     expect(canonicalProvider("opencode-go", "ox-alpha")).toBe("openrouter");
-    expect(canonicalProvider("cliproxyapi", "gpt-5.6-sol", "pi")).toBe("openai");
-    expect(canonicalProvider("cliproxyapi", "claude-opus-5", "pi")).toBe("anthropic");
+    expect(canonicalProvider("cliproxyapi", "gpt-5.6-sol")).toBe("openai");
+    expect(canonicalProvider("anthropic", "glm-4.7")).toBe("zai");
+    expect(canonicalProvider("openai", "deepseek-v4-flash")).toBe("deepseek");
   });
 
-  it("keeps gateway ids for models the rules cannot place", () => {
+  it("needs no entry for a self-named proxy, however it is spelled", () => {
+    expect(canonicalProvider("gpt-load", "deepseek-v4.1-flash")).toBe("deepseek");
+    expect(canonicalProvider("gpt-load, gptload", "deepseek-v4.1-flash")).toBe("deepseek");
+    expect(canonicalProvider("cliproxyapi, gptload", "gpt-6-astra")).toBe("openai");
+    expect(canonicalProvider("some-new-relay", "claude-opus-5")).toBe("anthropic");
+  });
+
+  it("keeps the reported id for models the rules cannot place", () => {
     expect(canonicalProvider("opencode", "big-pickle")).toBe("opencode");
-    expect(canonicalProvider("opencode-go", "big-pickle")).toBe("opencode-go");
+    expect(canonicalProvider("opencode_go", "big-pickle")).toBe("opencode-go");
     expect(canonicalProvider("cursor", "composer-2.5")).toBe("cursor");
     expect(canonicalProvider("cursor", "auto")).toBe("cursor");
     expect(canonicalProvider("cursor", "premium-tool-call")).toBe("cursor");
-    expect(canonicalProvider("cliproxyapi", "big-pickle", "pi")).toBe("cliproxyapi");
-  });
-
-  it("never re-attributes vendor ids, even with model context", () => {
-    expect(canonicalProvider("anthropic", "glm-4.7")).toBe("anthropic");
-    expect(canonicalProvider("openai-codex", "gpt-5.6-sol")).toBe("openai");
-    expect(canonicalProvider("moonshotai", "kimi-k2")).toBe("moonshotai");
-    // Same row from a client whose models the user configured: its
-    // `openai` names an OpenAI-compatible endpoint, so the model wins.
-    expect(canonicalProvider("openai", "deepseek-v4-flash", "hermes")).toBe("deepseek");
-    expect(canonicalProvider("openai", "gpt-5.6-sol", "hermes")).toBe("openai");
-    // ...while a client whose provider id is a real claim keeps it.
-    expect(canonicalProvider("openai", "deepseek-v4-flash", "codex")).toBe("openai");
+    expect(canonicalProvider("cliproxyapi", "big-pickle")).toBe("cliproxyapi");
+    expect(canonicalProvider("openai-codex", "unknown")).toBe("openai");
   });
 
   it("passes gateway ids through unchanged without model context", () => {

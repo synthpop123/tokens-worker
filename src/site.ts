@@ -391,7 +391,7 @@ export async function composeSiteBody(env: Env, quota?: QuotaPlan): Promise<stri
 
   for (const row of usage.results as unknown as UsageRow[]) {
     const model = canonicalModel(row.model);
-    row.provider = canonicalProvider(row.provider, row.model, row.client);
+    row.provider = canonicalProvider(row.provider, row.model);
     for (const agg of aggs) {
       // Only the lower bound is checked here: every range ends today,
       // and the query already stops there.

@@ -7,18 +7,18 @@
  * model, so /api/site canonicalizes ids *before* aggregating — which is
  * why its per-day model slices agree with its byModel breakdown.
  *
- * Provider ids are canonicalized to **model vendors**, because the raw ids
- * mix two semantics: clients whose logs record who served the request
- * report their own gateway (Zed says `zed.dev` for a Claude model,
- * OpenCode says `opencode` for GLM through its zen gateway, pi spells its
- * subscription-auth endpoint `openai-codex`), while the CLI's cursor
- * parser infers the vendor from the model name because Cursor's export has
- * no provider column. So canonicalProvider applies the alias table and —
- * given the row's model — re-attributes by those same model-name rules
- * (inferProviderFromModel) every row whose provider id is not a vendor
- * claim: a gateway id, or any id from a client whose models the user
- * configured. Models the rules can't place (composer, big-pickle, ...)
- * stay under the reported id, matching the CLI's own Cursor fallback.
+ * Provider ids are canonicalized to **model vendors**, and the model name
+ * is what decides. The reported id is only ever whatever the row's client
+ * logged: a vendor (`anthropic`), a subscription endpoint (`openai-codex`),
+ * a gateway (`zed.dev`, `opencode`), or a proxy the user named themselves
+ * in a client config (`gpt-load`, `cliproxyapi, gptload`). That last kind
+ * is open-ended, so no list of ids to demote could stay complete — instead
+ * canonicalProvider takes the vendor the model name implies
+ * (inferProviderFromModel, the rules the CLI's cursor parser uses) and
+ * keeps the reported id only for models the rules can't place (composer,
+ * big-pickle, ...), matching the CLI's own Cursor fallback. A vendor
+ * reselling another vendor's model therefore lands under the model's
+ * vendor, which is what "canonical provider" means here.
  *
  * Raw spellings are what D1 stores, so nothing here is lossy: the matrix
  * keeps every id the CLIs reported and canonicalization happens on the
@@ -29,9 +29,9 @@
  * skips the suffix rules entirely (and the Cursor prefix). Family-wide
  * product tiers that resemble effort suffixes belong in
  * PRODUCT_TIER_MODELS instead (Qwen Plus/Max).
- * When a new vendor's models appear behind a gateway provider, extend
- * inferProviderFromModel (keep its family recognition in step with the CLI's
- * provider_identity.rs; this Worker normalizes the final vendor ids).
+ * A new vendor extends inferProviderFromModel (keep its family recognition
+ * in step with the CLI's provider_identity.rs; this Worker normalizes the
+ * final vendor ids) — a new proxy or gateway needs no entry at all.
  */
 
 
@@ -96,6 +96,8 @@ export function canonicalModel(raw: string): string {
   return ALIASES.get(name) ?? name;
 }
 
+/** Only reached for models the vendor rules can't place, or when the
+ *  caller has no model context at all. */
 const PROVIDER_ALIASES = new Map<string, string>([
   // pi's OAuth-through-ChatGPT provider — OpenAI's Codex subscription.
   ["openai-codex", "openai"],
@@ -104,31 +106,6 @@ const PROVIDER_ALIASES = new Map<string, string>([
   // Some OpenCode parsers spell the OpenCode Go gateway with an underscore.
   ["opencode_go", "opencode-go"],
 ]);
-
-/**
- * Provider ids that name the serving gateway (the client's own endpoint)
- * or nothing at all — not a model vendor. Rows carrying these get
- * re-attributed by model name when the caller can supply one.
- */
-const GATEWAY_PROVIDERS = new Set([
-  "cursor",
-  "opencode",
-  "opencode-go",
-  "zed.dev",
-  "cliproxyapi",
-  "unknown",
-  "",
-]);
-
-/**
- * Clients whose models the user wires up by hand. The provider they
- * report is then whatever the configured endpoint speaks — Hermes Agent
- * logged DeepSeek V4 Flash under `openai` (an OpenAI-compatible base URL)
- * on one day and under `opencode_go` on the next. A vendor id is normally
- * a truthful claim and passes through untouched; from these clients it is
- * a dialect, so their rows take the model-name rules instead.
- */
-const CONFIGURED_MODEL_CLIENTS = new Set(["hermes"]);
 
 /** True when haystack contains needle bounded by non-alphanumerics. */
 function containsDelimited(haystack: string, needle: string): boolean {
@@ -188,20 +165,11 @@ export function inferProviderFromModel(model: string): string | null {
 }
 
 /**
- * Canonical provider id: alias spellings collapse into the vendor, and —
- * when the caller supplies the row's model — provider ids that are not a
- * vendor claim get re-attributed by model name. Two ways a row qualifies:
- * a gateway id (zed.dev, opencode, opencode-go, cursor, cliproxyapi,
- * unknown), or a
- * client whose models the user configured, where the id names the
- * endpoint's dialect. Models the rules can't place keep the reported id.
- * Without model context (already-aggregated ids) nothing is re-attributed.
+ * Canonical provider id: the vendor of the row's model whenever the rules
+ * can place it, otherwise the reported id with alias spellings collapsed.
+ * Without model context (already-aggregated ids) only the aliases apply.
  */
-export function canonicalProvider(raw: string, model?: string, client?: string): string {
-  const provider = PROVIDER_ALIASES.get(raw) ?? raw;
-  if (model === undefined) return provider;
-  const claimsVendor =
-    !GATEWAY_PROVIDERS.has(provider) &&
-    !(client !== undefined && CONFIGURED_MODEL_CLIENTS.has(client));
-  return claimsVendor ? provider : (inferProviderFromModel(model) ?? provider);
+export function canonicalProvider(raw: string, model?: string): string {
+  const inferred = model === undefined ? null : inferProviderFromModel(model);
+  return inferred ?? PROVIDER_ALIASES.get(raw) ?? raw;
 }
