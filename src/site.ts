@@ -2,18 +2,20 @@
  * GET /api/site — the one-request view backing lkwplus.com/tokens.
  *
  * Everything the dashboard needs, precomposed: totals and per-dimension
- * breakdowns for the five ranges it offers (today / 7 / 30 / 90 days /
- * all time, with the range boundaries computed here so client and server
- * always agree on "today" — `day` is the single-day window backing the
- * dashboard's Today section, and the only place the *full metric set* is
- * split per model for one calendar day), the full daily series sliced by
- * provider, client *and* model (the trend chart's stacking modes, the
- * weekday profile, the heatmap) with per-day active time where the CLI
- * reported it, and the device inventory with its CLI metadata. Every
- * breakdown row also carries its usage span — distinct active days plus
- * first/last date in range — and each client and provider row carries
- * the models behind it, the cell-level slice of the matrix the
- * marginals cannot reconstruct.
+ * breakdowns for the four ranges it offers (7 / 30 / 90 days / all time,
+ * with the range boundaries computed here so client and server always
+ * agree on the calendar), the full daily series sliced by provider and
+ * by client — each client carrying the models behind it, so any single
+ * day can be opened up the way a range can — with per-day active time
+ * where the CLI reported it, and the device inventory with its CLI
+ * metadata. Every breakdown row also carries its usage span — distinct
+ * active days plus first/last date in range — and each client and
+ * provider row carries the models behind it, the cell-level slice of
+ * the matrix the marginals cannot reconstruct.
+ *
+ * There is deliberately no single-day range: the dashboard's day panel
+ * reads the daily series, which now carries the same client × model
+ * join, so today and any day the visitor clicks are one code path.
  *
  * Model and provider ids are canonicalized (see models.ts) *before* any
  * aggregation, so the daily provider slices agree with the provider
@@ -53,7 +55,7 @@ import { QUOTA_PROVIDERS, type QuotaPlan } from "./quota-registry";
 // homepage's SITE_SCHEMA_VERSION and its committed /api/site fixture
 // (homepage: src/lib/client/tokens/schema.ts + contract.test.ts).
 const SITE_KEY = "site";
-export const SITE_VERSION = 13;
+export const SITE_VERSION = 14;
 /** How long a PoP may serve its local copy of the KV entry before
  *  re-checking central storage — the global worst-case staleness after
  *  a submission rewrites the payload (30 is the API's minimum). */
@@ -85,7 +87,6 @@ export const DEVICE_ONLINE_WITHIN_MS = 45 * 60_000;
 const quotaKey = (provider: string) => `quota:${provider}`;
 
 const RANGES = [
-  { key: "day", days: 1 },
   { key: "week", days: 7 },
   { key: "month", days: 30 },
   { key: "quarter", days: 90 },
@@ -125,6 +126,13 @@ interface DaySlice {
   cost: number;
 }
 
+/** A client's day, plus the models it drove — the cell-level join that
+ *  lets the dashboard open any single day, not just today. Keyed by
+ *  *canonical* model id, so the cells agree with byModel. */
+interface DayClient extends DaySlice {
+  models: Record<string, DaySlice>;
+}
+
 /**
  * Prototype-free, because the slice maps are keyed by ids that came
  * straight from a CLI payload: on a plain object an id spelled
@@ -133,7 +141,7 @@ interface DaySlice {
  * total still counts it — silent under-reporting, at HTTP 200. A Map
  * would be safe too, but these serialize straight into the response.
  */
-const emptySlices = (): Record<string, DaySlice> => Object.create(null);
+const emptySlices = <T>(): Record<string, T> => Object.create(null);
 
 interface SiteDay {
   date: string;
@@ -144,11 +152,7 @@ interface SiteDay {
    *  the CLI reported it. */
   active?: number;
   providers: Record<string, DaySlice>;
-  clients: Record<string, DaySlice>;
-  /** Keyed by *canonical* model id, so the slices agree with byModel.
-   *  Cheap despite the wide id space — a day uses two or three models,
-   *  not the forty-odd the all-time breakdown lists. */
-  models: Record<string, DaySlice>;
+  clients: Record<string, DayClient>;
 }
 
 /** Shift an ISO day by whole days; anchoring at noon UTC is DST-proof. */
@@ -376,18 +380,24 @@ export async function composeSiteBody(env: Env, quota?: QuotaPlan): Promise<stri
         messages: 0,
         providers: emptySlices(),
         clients: emptySlices(),
-        models: emptySlices(),
       };
       daily.set(date, day);
     }
     return day;
   };
-  const addSlice = (slices: Record<string, DaySlice>, key: string, row: UsageRow) => {
-    const slot = slices[key] ?? { tokens: 0, cost: 0 };
+  const addSlice = <T extends DaySlice>(
+    slices: Record<string, T>,
+    key: string,
+    row: UsageRow,
+    make: () => T
+  ): T => {
+    const slot = slices[key] ?? make();
     slot.tokens += row.tokens;
     slot.cost += row.cost;
     slices[key] = slot;
+    return slot;
   };
+  const slice = (): DaySlice => ({ tokens: 0, cost: 0 });
 
   for (const row of usage.results as unknown as UsageRow[]) {
     const model = canonicalModel(row.model);
@@ -402,9 +412,13 @@ export async function composeSiteBody(env: Env, quota?: QuotaPlan): Promise<stri
     day.cost += row.cost;
     day.messages += row.messages;
     if (row.tokens > 0 || row.cost > 0) {
-      addSlice(day.providers, row.provider || "unknown", row);
-      addSlice(day.clients, row.client || "unknown", row);
-      addSlice(day.models, model || "unknown", row);
+      addSlice(day.providers, row.provider || "unknown", row, slice);
+      const client = addSlice(day.clients, row.client || "unknown", row, () => ({
+        tokens: 0,
+        cost: 0,
+        models: emptySlices<DaySlice>(),
+      }));
+      addSlice(client.models, model || "unknown", row, slice);
     }
   }
 

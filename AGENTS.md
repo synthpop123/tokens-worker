@@ -91,7 +91,7 @@ push: the Workers Builds log prints the executed build command, so a
   submissions may legitimately carry dates up to two days ahead, but
   every window the dashboard draws ends today, so all three composition
   statements are bounded by `u.date <= today`. Keep new ones bounded
-  too, or the Today section will contradict its own active-time card.
+  too, or the day panel will contradict its own active-time card.
 - Migrations are append-only. D1 records applied migrations by filename,
   and `0003_rebuild.sql` starts with `DROP TABLE`, so renaming or
   collapsing the existing files would re-run a destructive migration

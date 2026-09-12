@@ -23,7 +23,7 @@ import {
 
 beforeEach(() => reset());
 
-const RANGE_KEYS = ["day", "week", "month", "quarter", "all"] as const;
+const RANGE_KEYS = ["week", "month", "quarter", "all"] as const;
 const METRIC_KEYS = [
   "input", "output", "cacheRead", "cacheWrite", "reasoning", "tokens", "messages", "cost",
 ] as const;
@@ -114,13 +114,27 @@ function expectSiteContract(site: Record<string, any>): void {
     for (const metric of ["tokens", "cost", "messages"]) {
       expect(typeof day[metric], `daily.${metric}`).toBe("number");
     }
-    // The three stacking dimensions the trend chart Object.entries() over.
-    for (const dim of ["providers", "clients", "models"]) {
-      expect(day[dim], `daily.${dim}`).toBeTypeOf("object");
-      for (const slice of Object.values(day[dim]) as Array<Record<string, unknown>>) {
-        expect(typeof slice.tokens).toBe("number");
-        expect(typeof slice.cost).toBe("number");
+    expect(day.providers, "daily.providers").toBeTypeOf("object");
+    for (const slice of Object.values(day.providers) as Array<Record<string, unknown>>) {
+      expect(typeof slice.tokens).toBe("number");
+      expect(typeof slice.cost).toBe("number");
+    }
+    // Each client carries the models behind it, which is what lets the
+    // dashboard open any single day the way it opens a range (and what
+    // the model stacking derives its per-day marginal from).
+    expect(day.clients, "daily.clients").toBeTypeOf("object");
+    for (const client of Object.values(day.clients) as Array<Record<string, any>>) {
+      expect(typeof client.tokens).toBe("number");
+      expect(typeof client.cost).toBe("number");
+      expect(client.models, "daily.clients.models").toBeTypeOf("object");
+      let summed = 0;
+      for (const cell of Object.values(client.models) as Array<Record<string, unknown>>) {
+        expect(typeof cell.tokens).toBe("number");
+        expect(typeof cell.cost).toBe("number");
+        summed += cell.tokens as number;
       }
+      // A partition of the client's day, not a sample.
+      expect(summed, "daily.clients.models sum").toBe(client.tokens);
     }
   }
 
@@ -211,10 +225,14 @@ describe("GET /api/site", () => {
       tokens: 1000,
       active: 3_600_000,
       providers: { anthropic: expect.objectContaining({ tokens: 1000 }) },
-      clients: { cursor: expect.objectContaining({ tokens: 1000 }) },
-      // Keyed canonically, so a day's model slices agree with byModel
+      // Keyed canonically, so a day's model cells agree with byModel
       // rather than splitting one model across its effort spellings.
-      models: { "claude-opus-4-5": expect.objectContaining({ tokens: 1000 }) },
+      clients: {
+        cursor: expect.objectContaining({
+          tokens: 1000,
+          models: { "claude-opus-4-5": expect.objectContaining({ tokens: 1000 }) },
+        }),
+      },
     });
     expect(site.devices).toEqual([
       expect.objectContaining({
@@ -226,11 +244,11 @@ describe("GET /api/site", () => {
     ]);
   });
 
-  it("scopes the day range to today, models included", async () => {
-    // The dashboard's Today section is the only consumer of a per-model
-    // split of a single calendar day — the daily series carries client and
-    // provider slices but no models — so the window has to be exactly
-    // today in the collector's timezone, not "the last 24 hours".
+  it("splits each day by client × model, today included", async () => {
+    // The dashboard's day panel opens any calendar day, today or one
+    // clicked in the heatmap, so the join has to ride on the daily
+    // series rather than on a single-day range. Days are the collector's
+    // (Asia/Shanghai), not "the last 24 hours".
     const today = isoToday();
     const yesterday = new Date(`${today}T12:00:00Z`);
     yesterday.setUTCDate(yesterday.getUTCDate() - 1);
@@ -246,13 +264,24 @@ describe("GET /api/site", () => {
 
     const site = (await (await call("/api/site")).json()) as Record<string, any>;
     expectSiteContract(site);
-    const day = site.ranges.day;
-    expect(day.from).toBe(today);
-    expect(day.totals).toMatchObject({ tokens: 500, activeDays: 1, firstDate: today, lastDate: today });
-    expect(day.byModel).toEqual([expect.objectContaining({ model: "gpt-5.5-codex", tokens: 500 })]);
-    expect(day.byClient).toEqual([expect.objectContaining({ client: "claude" })]);
-    expect(day.byProvider).toEqual([expect.objectContaining({ provider: "openai" })]);
-    // The wider ranges still see both days.
+    const day = site.daily.find((entry: any) => entry.date === today);
+    expect(day).toMatchObject({
+      tokens: 500,
+      providers: { openai: expect.objectContaining({ tokens: 500 }) },
+      clients: {
+        claude: expect.objectContaining({
+          tokens: 500,
+          models: { "gpt-5.5-codex": expect.objectContaining({ tokens: 500 }) },
+        }),
+      },
+    });
+    // Yesterday splits the same way, from the same rows.
+    expect(site.daily.find((entry: any) => entry.date === eve).clients).toMatchObject({
+      cursor: expect.objectContaining({
+        models: { "claude-opus-4-5": expect.objectContaining({ tokens: 1000 }) },
+      }),
+    });
+    // The ranges still see both days.
     expect(site.ranges.week.totals.tokens).toBe(1500);
   });
 
@@ -387,7 +416,7 @@ describe("GET /api/site", () => {
     const site = (await (await call("/api/site")).json()) as Record<string, any>;
     expectSiteContract(site);
     const day = site.daily.find((d: any) => d.date === "2026-07-19");
-    for (const dim of ["providers", "clients", "models"] as const) {
+    for (const dim of ["providers", "clients"] as const) {
       const sliced = Object.values(day[dim]).reduce(
         (sum: number, slice: any) => sum + slice.tokens,
         0
@@ -395,6 +424,8 @@ describe("GET /api/site", () => {
       expect(sliced, `daily.${dim} must account for the whole day`).toBe(day.tokens);
     }
     expect(Object.keys(day.clients).sort()).toEqual(["__proto__", "constructor"]);
+    // Model ids reach the nested cell maps through the same door.
+    expect(Object.keys(day.clients.constructor.models)).toEqual(["m-a"]);
   });
 
   it("rounds cost to microdollars instead of shipping float artefacts", async () => {
