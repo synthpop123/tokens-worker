@@ -70,6 +70,22 @@ push: the Workers Builds log prints the executed build command, so a
   and recomposes in one call: KV is eventually consistent, so never
   write a plan and then read it back to compose the payload. `wipeQuota`
   is the full-wipe path.
+- On that host the `agent` user runs **three** units, not two: the two
+  quota timers above, plus a long-lived `tokens-serve.service` that
+  submits this device's usage every 30 minutes. So after replacing
+  `/usr/local/bin/tokens` there, always
+  `systemctl --user restart tokens-serve.service`. The timers re-exec the
+  binary per run and pick a new version up on their own; the serve
+  process does not — it spawns each submit through `/proc/self/exe`, and
+  installing over the binary unlinks the inode it is holding, so every
+  submit fails `No such file or directory (os error 2)` until restart
+  while the process itself stays `active (running)`. A 27.0.4 → 27.0.5
+  upgrade cost 19h of submissions that way. Two corollaries: the version
+  on the dashboard's device card is self-reported by the serve process,
+  so it keeps showing the *old* version — that stale number is the
+  symptom, not a packaging bug; and `systemctl --user list-timers` does
+  not list services, so enumerate with `list-units --all "*token*"`
+  before concluding nothing needs a restart.
 - `report-claude-quota.py` is the one place this repo can destroy a
   credential: **Anthropic rotates the refresh token on every exchange**.
   It therefore refreshes only within 10 minutes of expiry, writes the
