@@ -36,6 +36,12 @@ describe("canonicalModel", () => {
     expect(canonicalModel("cursor-small")).toBe("cursor-small");
   });
 
+  it("merges both spellings of Cursor's Auto mode, without touching the suffix", () => {
+    expect(canonicalModel("default")).toBe("auto");
+    expect(canonicalModel("auto")).toBe("auto");
+    expect(canonicalModel("grok-bot-default")).toBe("grok-bot");
+  });
+
   it("applies aliases after suffix stripping too", () => {
     expect(canonicalModel("claude-4-5-opus-thinking")).toBe("claude-opus-4-5");
     expect(canonicalModel("grok-4.5-build-free")).toBe("grok-4.5");

@@ -49,6 +49,13 @@ const SUFFIX_RULES: RegExp[] = [
  *  is a Map — a plain object would resolve `constructor` and `toString`
  *  off Object.prototype. */
 const ALIASES = new Map<string, string>([
+  // Cursor's Auto mode, which the CLI's cursor parser has spelled two ways
+  // (`auto` and, in the rows this account collected through 2026-09-12,
+  // `default`). One mode, so one id — and `auto` is the readable one, since
+  // the dashboard title-cases whatever arrives. The bare name is Cursor's
+  // alone: every other client reports a real model, and the grok CLI's "no
+  // tier chosen" is a *suffix* (`grok-bot-default`) the rules below strip.
+  ["default", "auto"],
   // Cursor spells Anthropic 4.x models family-last.
   ["claude-4-opus", "claude-opus-4"],
   ["claude-4-5-opus", "claude-opus-4-5"],
