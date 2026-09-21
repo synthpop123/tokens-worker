@@ -86,6 +86,22 @@ push: the Workers Builds log prints the executed build command, so a
   symptom, not a packaging bug; and `systemctl --user list-timers` does
   not list services, so enumerate with `list-units --all "*token*"`
   before concluding nothing needs a restart.
+- Three devices submit — `OracleARM`, `UbuntuPC`, `MacbookPro` — so the
+  `tokens serve` restart above applies per host, under a different unit
+  name on each: UbuntuPC's is `tokens.service`, running
+  `~/.local/bin/tokens serve`. Grepping for `tokens-serve.service` misses
+  it, which cost UbuntuPC a submit on the 27.0.5 → 27.1.1 upgrade.
+- **Cursor is account-wide and must be reported from one device only.**
+  It has no local session log: each submit refreshes the whole account's
+  usage into `<config>/cursor-cache/usage.json`, and the scanner reads
+  that file, never the credential. So two logged-in devices report the
+  same rows under two `device_id`s and the dashboard adds them, and
+  `cursor logout` does *not* stop it — it stops the refresh, while the
+  stale `usage.json` replays every 30 minutes. Deleting
+  `<config>/cursor-cache/` is what stops it. MacbookPro replayed its
+  2026-09-02 snapshot until 2026-09-21, +1.65B tokens, visible only
+  because the two CLIs spelled Auto mode differently (`default` vs
+  `auto`); models they spelled alike doubled inside one row.
 - `report-claude-quota.py` is the one place this repo can destroy a
   credential: **Anthropic rotates the refresh token on every exchange**.
   It therefore refreshes only within 10 minutes of expiry, writes the
