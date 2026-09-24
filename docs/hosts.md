@@ -94,6 +94,7 @@ why exactly one host may do it.
 
 ## UbuntuPC
 
-Not yet documented. Known from `/api/site` only: it reports as `UbuntuPC`, was
-on CLI 27.0.4 on 2026-08-21, and submits on the usual cadence. Fill in access,
-install method, and supervisor when next on that machine.
+Partly documented. It reports as `UbuntuPC`; the supervisor is a systemd unit
+named `tokens.service` (not `tokens-serve.service`) running
+`~/.local/bin/tokens serve`, so the same restart rule applies after an upgrade.
+Fill in access and install method when next on that machine.

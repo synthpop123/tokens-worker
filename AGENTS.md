@@ -45,11 +45,10 @@ push: the Workers Builds log prints the executed build command, so a
   until the homepage ships. Which is also the rollout order: capturing
   the fixture needs a live endpoint on the new schema, so this Worker
   goes out first and the page falls back for the couple of minutes in
-  between (schemas 9 and 10 both shipped that way). The alternative —
-  parking a new key under the current version until the homepage reads
-  it — only exists for shapes the current reader survives whole, and it
-  costs a second round through both repos; `daily[].models` took it
-  under 7, and the version caught up to 8 when the homepage read it.
+  between. The alternative — parking a new key under the current version
+  until the homepage reads it — only exists for shapes the current reader
+  survives whole, and it costs a second round through both repos: the
+  version is bumped once the homepage reads the key.
 - The subscription quota cards are **reported, not derived**: one host
   (OracleARM, two systemd user timers) reports Codex via
   `scripts/report-codex-quota.sh` (`tokens codex status --json`) and
@@ -70,27 +69,27 @@ push: the Workers Builds log prints the executed build command, so a
   and recomposes in one call: KV is eventually consistent, so never
   write a plan and then read it back to compose the payload. `wipeQuota`
   is the full-wipe path.
-- On that host the `agent` user runs **three** units, not two: the two
-  quota timers above, plus a long-lived `tokens-serve.service` that
-  submits this device's usage every 30 minutes. So after replacing
+- On that host (per-host install and supervision: `docs/hosts.md`) the
+  `agent` user runs **three** units, not two: the two quota timers
+  above, plus a long-lived `tokens-serve.service` that submits this
+  device's usage every 30 minutes. So after replacing
   `/usr/local/bin/tokens` there, always
   `systemctl --user restart tokens-serve.service`. The timers re-exec the
   binary per run and pick a new version up on their own; the serve
   process does not — it spawns each submit through `/proc/self/exe`, and
   installing over the binary unlinks the inode it is holding, so every
   submit fails `No such file or directory (os error 2)` until restart
-  while the process itself stays `active (running)`. A 27.0.4 → 27.0.5
-  upgrade cost 19h of submissions that way. Two corollaries: the version
-  on the dashboard's device card is self-reported by the serve process,
-  so it keeps showing the *old* version — that stale number is the
-  symptom, not a packaging bug; and `systemctl --user list-timers` does
+  while the process itself stays `active (running)`. Two corollaries:
+  the version on the dashboard's device card is self-reported by the
+  serve process, so it keeps showing the *old* version — that stale
+  number is the symptom, not a packaging bug; and `systemctl --user list-timers` does
   not list services, so enumerate with `list-units --all "*token*"`
   before concluding nothing needs a restart.
 - Three devices submit — `OracleARM`, `UbuntuPC`, `MacbookPro` — so the
   `tokens serve` restart above applies per host, under a different unit
   name on each: UbuntuPC's is `tokens.service`, running
   `~/.local/bin/tokens serve`. Grepping for `tokens-serve.service` misses
-  it, which cost UbuntuPC a submit on the 27.0.5 → 27.1.1 upgrade.
+  it.
 - **Cursor is account-wide and must be reported from one device only.**
   It has no local session log: each submit refreshes the whole account's
   usage into `<config>/cursor-cache/usage.json`, and the scanner reads
@@ -98,10 +97,11 @@ push: the Workers Builds log prints the executed build command, so a
   same rows under two `device_id`s and the dashboard adds them, and
   `cursor logout` does *not* stop it — it stops the refresh, while the
   stale `usage.json` replays every 30 minutes. Deleting
-  `<config>/cursor-cache/` is what stops it. MacbookPro replayed its
-  2026-09-02 snapshot until 2026-09-21, +1.65B tokens, visible only
-  because the two CLIs spelled Auto mode differently (`default` vs
-  `auto`); models they spelled alike doubled inside one row.
+  `<config>/cursor-cache/` is what stops it. The dashboard cannot reveal
+  the duplicate — the same model from two devices sums into one row — so
+  check D1 instead: `SELECT date, COUNT(DISTINCT device_id) AS devices
+  FROM daily_usage WHERE client = 'cursor' GROUP BY date HAVING devices > 1`
+  must return nothing.
 - `report-claude-quota.py` is the one place this repo can destroy a
   credential: **Anthropic rotates the refresh token on every exchange**.
   It therefore refreshes only within 10 minutes of expiry, writes the
@@ -129,9 +129,9 @@ push: the Workers Builds log prints the executed build command, so a
   collapsing the existing files would re-run a destructive migration
   against production data.
 - Write path is set-based: changed rows travel as JSON parameters
-  expanded with `json_each`, one atomic D1 batch per submission. Never go
-  back to per-row statements — D1 caps queries per invocation (50 on
-  Free, counted per statement across batches).
+  expanded with `json_each`, one atomic D1 batch per submission. Never use
+  per-row statements — D1 caps queries per invocation (50 on Free,
+  counted per statement across batches).
 - Bindings and vars come from `wrangler.jsonc` through `wrangler types`
   (`Cloudflare.Env`), which `src/http.ts` extends with the one secret
   that cannot live there. Don't hand-maintain a binding list; it drifts.
@@ -149,10 +149,9 @@ push: the Workers Builds log prints the executed build command, so a
   endpoints or merge semantics change, update it with the README.
 - There is exactly one public read endpoint, `/api/site`, and that is a
   decision rather than a gap. A filterable aggregation API (stats /
-  timeseries / breakdown / graph / meta / devices / submissions, 677
-  lines) was removed once it was clear nothing called it: the CLI
-  computes those views locally and the dashboard reads the precomposed
-  payload. The matrix is untouched in D1 at full fidelity, so ad-hoc
+  timeseries / breakdown / graph / meta / devices / submissions) was
+  removed once it was clear nothing called it: the CLI computes those
+  views locally and the dashboard reads the precomposed payload. The matrix is untouched in D1 at full fidelity, so ad-hoc
   questions go to `wrangler d1 execute`, not to a new endpoint. Do not
   re-add a general query surface without a caller that exists.
 - Read responses serve a static `Access-Control-Allow-Origin: *`
