@@ -53,9 +53,22 @@ describe("POST /api/quota/codex", () => {
       provider: "openai",
       label: "Codex",
       plan: "Team",
-      windows: [{ label: "Weekly", usedPercent: 28, resetsAt: "2026-08-08T13:28:31.000Z" }],
+      windows: [
+        {
+          label: "Weekly",
+          usedPercent: 28,
+          resetsAt: "2026-08-08T13:28:31.000Z",
+          breakdown: [],
+        },
+      ],
+      allowances: [],
       // Ascending, regardless of the order the vendor listed them in.
-      resetCredits: ["2026-08-11T21:08:53.949Z", "2026-08-12T17:51:33.326Z"],
+      resetCredits: [
+        { expiresAt: "2026-08-11T21:08:53.949Z", title: "Full reset" },
+        { expiresAt: "2026-08-12T17:51:33.326Z", title: "Full reset" },
+      ],
+      // No purchased credits: usage stops at the ceiling.
+      extraUsage: { enabled: false, used: null, limit: null, currency: null },
     });
   });
 
@@ -64,6 +77,7 @@ describe("POST /api/quota/codex", () => {
     const body = await (await call("/api/site")).text();
     expect(body).not.toContain("someone@example.com");
     expect(body).not.toContain("RateLimitResetCredit_a");
+    expect(body).not.toContain("Thanks for using Codex");
     // Fields with no card to appear on are dropped whole, not carried
     // "just in case" — the payload is a view, not a mirror.
     for (const key of ["email", "credit_status", "spend_control", "remaining_percent"]) {
@@ -107,7 +121,7 @@ describe("POST /api/quota/codex", () => {
     ];
     expect((await reportQuota(payload)).status).toBe(200);
     expect((await planOf("openai")).windows).toEqual([
-      { label: "Weekly", usedPercent: 28, resetsAt: "2026-08-08T13:28:31.000Z" },
+      { label: "Weekly", usedPercent: 28, resetsAt: "2026-08-08T13:28:31.000Z", breakdown: [] },
     ]);
   });
 
@@ -121,6 +135,7 @@ describe("POST /api/quota/codex", () => {
       label: "Weekly",
       usedPercent: 28,
       resetsAt: null,
+      breakdown: [],
     });
   });
 });
@@ -139,18 +154,53 @@ describe("POST /api/quota/claude", () => {
       // vendors' disagreement.
       plan: "Pro",
       windows: [
-        { label: "Session", usedPercent: 60, resetsAt: "2026-08-06T11:49:59.452Z" },
-        { label: "Weekly", usedPercent: 6, resetsAt: "2026-08-13T03:59:59.452Z" },
+        { label: "Session", usedPercent: 60, resetsAt: "2026-08-06T11:49:59.452Z", breakdown: [] },
+        {
+          label: "Weekly",
+          usedPercent: 6,
+          resetsAt: "2026-08-13T03:59:59.452Z",
+          // Largest first, and a surface with no share is not a share.
+          breakdown: [
+            { label: "Claude Code", percent: 80 },
+            { label: "Chats", percent: 20 },
+          ],
+        },
+        // A scoped ceiling appears when the vendor reports one; the null
+        // `seven_day_opus` does not become an empty row.
+        {
+          label: "Weekly · Sonnet",
+          usedPercent: 12,
+          resetsAt: "2026-08-13T03:59:59.452Z",
+          breakdown: [],
+        },
+      ],
+      // Only the codename whose meaning is known; `nimbus_quill` is not
+      // guessed at.
+      allowances: [
+        {
+          label: "Cloud session credits",
+          usedDollars: 25.5,
+          limitDollars: 100,
+          resetsAt: "2026-11-05T07:59:00.000Z",
+        },
       ],
       // Claude has no manual-reset credits; the list is empty, not absent.
       resetCredits: [],
+      extraUsage: { enabled: true, used: 3.2, limit: 50, currency: "USD" },
     });
   });
 
   it("drops the vendor fields that have no card", async () => {
     await reportClaudeQuota();
     const body = await (await call("/api/site")).text();
-    for (const key of ["limit_dollars", "spend", "extra_usage", "member_dashboard", "severity"]) {
+    for (const key of [
+      "limit_dollars",
+      "extra_usage",
+      "member_dashboard",
+      "severity",
+      "nimbus_quill",
+      "window_started_at",
+    ]) {
       expect(body, key).not.toContain(key);
     }
   });
@@ -162,16 +212,15 @@ describe("POST /api/quota/claude", () => {
     payload.limits = [{ kind: "something_new", percent: 99 }];
     await reportClaudeQuota(payload);
     const plan = await planOf("anthropic");
-    expect(plan.windows.map((w: any) => w.usedPercent)).toEqual([60, 6]);
+    expect(plan.windows.map((w: any) => w.usedPercent)).toEqual([60, 6, 12]);
   });
 
   it("keeps a plan reporting only one of its windows", async () => {
     const payload = claudeQuotaPayload();
     payload.five_hour = null;
+    payload.seven_day_sonnet = null;
     await reportClaudeQuota(payload);
-    expect((await planOf("anthropic")).windows).toEqual([
-      { label: "Weekly", usedPercent: 6, resetsAt: "2026-08-13T03:59:59.452Z" },
-    ]);
+    expect((await planOf("anthropic")).windows.map((w: any) => w.label)).toEqual(["Weekly"]);
   });
 });
 

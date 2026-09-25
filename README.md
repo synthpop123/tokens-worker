@@ -124,6 +124,17 @@ public and unauthenticated, and where an upstream field rename becomes a
 400 instead of a silent homepage change. A report is a full overwrite of
 that plan, so a tier change cannot leave a stale window behind.
 
+What a plan publishes: its rate-limit **windows** (percentage, reset time,
+and for Claude's weekly window the **breakdown** of its spend by surface —
+Claude Code, Chats, Cowork — from `seven_day_breakdown`; Claude's model- and
+surface-scoped weekly ceilings appear as windows of their own when reported),
+its dollar **allowances** (Claude's cloud session credits, reported under the
+codename `iguana_necktie` — only codenames whose meaning is known are read),
+its banked **reset credits** (Codex: expiry plus what the credit resets), and
+**extraUsage** — whether pay-as-you-go usage past the ceilings is on, with
+spend and cap where the vendor reports them (Claude's `spend`; Codex only says
+whether credits exist).
+
 Plans are stored in **KV, not D1**: one key each, rewritten in place,
 constant in size forever. A percentage a collector can re-fetch in a second
 is not history, and the fan-out's rule is that nothing accumulates on

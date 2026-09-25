@@ -100,12 +100,34 @@ function expectSiteContract(site: Record<string, any>): void {
         window.resetsAt === null || typeof window.resetsAt === "string",
         "quota.windows.resetsAt"
       ).toBe(true);
+      expect(Array.isArray(window.breakdown), "quota.windows.breakdown").toBe(true);
+      for (const share of window.breakdown) {
+        expect(typeof share.label).toBe("string");
+        expect(typeof share.percent).toBe("number");
+      }
     }
-    expect(
-      Array.isArray(plan.resetCredits) &&
-        plan.resetCredits.every((at: unknown) => typeof at === "string"),
-      "quota.resetCredits"
-    ).toBe(true);
+    expect(Array.isArray(plan.allowances), "quota.allowances").toBe(true);
+    for (const allowance of plan.allowances) {
+      expect(typeof allowance.label).toBe("string");
+      expect(typeof allowance.usedDollars).toBe("number");
+      expect(typeof allowance.limitDollars).toBe("number");
+      expect(allowance.resetsAt === null || typeof allowance.resetsAt === "string").toBe(true);
+    }
+    expect(Array.isArray(plan.resetCredits), "quota.resetCredits").toBe(true);
+    for (const credit of plan.resetCredits) {
+      expect(typeof credit.expiresAt).toBe("string");
+      expect(credit.title === null || typeof credit.title === "string").toBe(true);
+    }
+    if (plan.extraUsage !== null) {
+      expect(typeof plan.extraUsage.enabled, "quota.extraUsage.enabled").toBe("boolean");
+      for (const key of ["used", "limit"]) {
+        const value = plan.extraUsage[key];
+        expect(value === null || typeof value === "number", `quota.extraUsage.${key}`).toBe(true);
+      }
+      expect(
+        plan.extraUsage.currency === null || typeof plan.extraUsage.currency === "string"
+      ).toBe(true);
+    }
   }
 
   expect(Array.isArray(site.daily)).toBe(true);

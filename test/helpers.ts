@@ -175,8 +175,9 @@ export function quotaPayload(): Record<string, unknown> {
 /**
  * api.anthropic.com/api/oauth/usage verbatim, plus the `plan` the
  * collector reads beside the credential. The fields with no card to
- * appear on (`spend`, `extra_usage`, the parallel `limits` array) are
- * kept so the narrowing has something to drop.
+ * appear on (`extra_usage`, the parallel `limits` array, an allowance
+ * under a codename nobody has named) are kept so the narrowing has
+ * something to drop.
  */
 export function claudeQuotaPayload(): Record<string, unknown> {
   return {
@@ -194,11 +195,37 @@ export function claudeQuotaPayload(): Record<string, unknown> {
       used_dollars: null,
     },
     seven_day_opus: null,
+    seven_day_sonnet: {
+      utilization: 12,
+      resets_at: "2026-08-13T03:59:59.452807+00:00",
+    },
+    iguana_necktie: {
+      utilization: 25,
+      resets_at: "2026-11-05T07:59:00+00:00",
+      limit_dollars: 100,
+      used_dollars: 25.5,
+      remaining_dollars: 74.5,
+    },
+    nimbus_quill: { utilization: 0, resets_at: null, limit_dollars: 40, used_dollars: 0 },
+    seven_day_breakdown: {
+      as_of: "2026-08-06T08:00:00+00:00",
+      window_started_at: "2026-08-06T03:59:59.452807+00:00",
+      rows: [
+        { key: "chat", display_name: "Chats", percent: 20 },
+        { key: "claude_code", display_name: "Claude Code", percent: 80 },
+        { key: "cowork", display_name: "Cowork", percent: 0 },
+      ],
+    },
     limits: [
       { kind: "session", group: "session", percent: 60, severity: "normal", is_active: true },
       { kind: "weekly_all", group: "weekly", percent: 6, severity: "normal", is_active: false },
     ],
-    spend: { used: { amount_minor: 0, currency: "USD" }, percent: 0, enabled: false },
+    spend: {
+      used: { amount_minor: 320, currency: "USD", exponent: 2 },
+      limit: { amount_minor: 5000, currency: "USD", exponent: 2 },
+      percent: 6,
+      enabled: true,
+    },
     extra_usage: { is_enabled: false, monthly_limit: null },
     member_dashboard_available: false,
   };
